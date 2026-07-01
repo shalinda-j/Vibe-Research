@@ -50,6 +50,18 @@ def extract_urls(text: str) -> list[str]:
     return out
 
 
+def estimate_cost(usage: dict) -> str:
+    """A rough $ estimate from token counts (API mode only). Clearly approximate:
+    the real cost depends on which model ran each stage. Empty for subscription
+    mode (no per-token data)."""
+    it = int((usage or {}).get("input_tokens", 0) or 0)
+    ot = int((usage or {}).get("output_tokens", 0) or 0)
+    if not (it or ot):
+        return ""
+    cost = it / 1_000_000 * 5.0 + ot / 1_000_000 * 15.0  # blended Opus-class rate
+    return f"est. cost ~${cost:.2f}  ({it:,} in + {ot:,} out tokens, rough)"
+
+
 def _is_retryable(exc: BaseException) -> bool:
     """Whether an exception from a model call is worth retrying.
 

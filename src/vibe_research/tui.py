@@ -11,6 +11,7 @@ Keys:  Ctrl+N new topic - Ctrl+L clear log - Ctrl+S copy report - F2 light/dark 
 
 from __future__ import annotations
 
+import sys
 import time
 
 from rich.markup import escape as _esc
@@ -20,7 +21,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Footer, Header, Input, Markdown, RichLog, Static
 
-from .backends import get_backend
+from .backends import estimate_cost, get_backend
 from .config import Config
 from .pipeline import run_kwargs_from_config, run_pipeline
 from .reports import save_report
@@ -77,6 +78,8 @@ class VibeResearchApp(App):
         Binding("ctrl+l", "clear_log", "Clear log"),
         Binding("ctrl+s", "copy_report", "Copy report"),
         Binding("ctrl+p", "export_pdf", "Export PDF"),
+        Binding("ctrl+e", "export_all", "Export all"),
+        Binding("ctrl+o", "open_report", "Open"),
         Binding("f2", "toggle_dark", "Light/Dark"),
     ]
 
@@ -113,8 +116,9 @@ class VibeResearchApp(App):
                     "# Report will appear here\n\n"
                     "Type a topic above and press **Enter** to begin.\n\n"
                     "A crew of agents will plan, research, fact-check (by debate), "
-                    "and refine — then write a cited report here.\n\n"
-                    "_Ctrl+P exports it to PDF · Ctrl+S copies it._"
+                    "and refine — then write a cited report here, with sources ranked "
+                    "by credibility.\n\n"
+                    "_Ctrl+E export all formats · Ctrl+P PDF · Ctrl+O open · Ctrl+S copy._"
                 )
         yield Footer()
 
@@ -216,6 +220,70 @@ class VibeResearchApp(App):
             self._log(f"[green]✔ PDF exported: {_esc(str(path))}[/green]")
         except Exception as exc:
             self._log(f"[red]✗ PDF export failed: {_esc(str(exc))}[/red]")
+
+    def action_export_all(self) -> None:
+        """Export the current report to every available format on demand."""
+        if not self._report_text:
+            self._log("[yellow]No report to export yet — finish a run first.[/yellow]")
+            return
+        from pathlib import Path
+
+        if self._final_path:
+            base = Path(self._final_path)
+            md = base.read_text(encoding="utf-8")
+        else:
+            base = self.cfg.resolved_reports_dir() / "report.md"
+            base.parent.mkdir(parents=True, exist_ok=True)
+            md = self._report_text
+        title = self._last_topic or "vibe-research report"
+        made: list = []
+
+        try:
+            from .export import (
+                docx_available, docx_path_for, html_path_for, markdown_to_docx,
+                markdown_to_html_file, markdown_to_pdf, pdf_available, pdf_path_for,
+            )
+
+            made.append(markdown_to_html_file(md, html_path_for(base), title=title))
+            if pdf_available():
+                made.append(markdown_to_pdf(md, pdf_path_for(base), title=title))
+            if docx_available():
+                made.append(markdown_to_docx(md, docx_path_for(base), title=title))
+        except Exception as exc:
+            self._log(f"[red]Export error: {_esc(str(exc))}[/red]")
+        if self._result:
+            try:
+                from .reports import save_json
+
+                made.append(save_json(base, self._result))
+            except Exception:
+                pass
+
+        for out in made:
+            self._log(f"[green]✔ exported {_esc(str(out))}[/green]")
+        if not made:
+            self._log("[yellow]Nothing exported (install fpdf2 / python-docx for PDF/DOCX).[/yellow]")
+
+    def _open_path(self, path) -> None:
+        import subprocess
+
+        try:
+            if sys.platform == "win32":
+                import os
+
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
+        except Exception as exc:
+            self._log(f"[red]Open failed: {_esc(str(exc))}[/red]")
+
+    def action_open_report(self) -> None:
+        if self._final_path:
+            self._open_path(self._final_path)
+        else:
+            self._log("[yellow]No saved report to open yet.[/yellow]")
 
     def _save_extras(self, path, report: str, topic: str) -> None:
         """Write the JSON sidecar and/or HTML page if the config asks for them."""
@@ -403,11 +471,18 @@ class VibeResearchApp(App):
             self._save_extras(path, report, topic)
             if self.cfg.export_pdf:
                 self.action_export_pdf()
+            if self._result:
+                cred = self._result.get("credibility")
+                if cred:
+                    self._log(f"[dim]sources: {_esc(cred)}[/dim]")
+                cost = estimate_cost(self._result.get("usage", {}))
+                if cost:
+                    self._log(f"[dim]{_esc(cost)}[/dim]")
             try:
                 self._log(f"[dim]{_esc(backend.usage_line())}[/dim]")
             except Exception:
                 pass
-            self._log("[dim]Ctrl+S copies · Ctrl+P exports PDF · Ctrl+N new topic[/dim]")
+            self._log("[dim]Ctrl+S copy · Ctrl+E export all · Ctrl+O open · Ctrl+N new topic[/dim]")
         except Exception as exc:
             self._log(f"[red]✗ Error: {_esc(str(exc))}[/red]")
             self._report().update(f"# Something went wrong\n\n```\n{exc}\n```")

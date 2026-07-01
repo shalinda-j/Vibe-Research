@@ -4,6 +4,14 @@ All notable changes to **vibe-research** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project uses
 [semantic versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **TUI**: `Ctrl+E` exports the current report to every available format at once
+  (HTML + PDF + DOCX + JSON), `Ctrl+O` opens the saved report, and completion now
+  shows the **source-credibility tally** and a **cost estimate** — bringing the
+  TUI to full parity with headless mode.
+
 ## [0.4.0]
 
 ### Added

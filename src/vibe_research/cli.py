@@ -291,14 +291,10 @@ def _open_file(path: Path) -> None:
 
 
 def _cost_estimate(usage: dict) -> str:
-    """A rough $ estimate from token counts (API mode only). Clearly approximate:
-    the real cost depends on which model ran each stage."""
-    it = int(usage.get("input_tokens", 0) or 0)
-    ot = int(usage.get("output_tokens", 0) or 0)
-    if not (it or ot):
-        return ""  # subscription mode / no per-token data
-    cost = it / 1_000_000 * 5.0 + ot / 1_000_000 * 15.0  # blended Opus-class rate
-    return f"est. cost ~${cost:.2f}  ({it:,} in + {ot:,} out tokens, rough)"
+    """Thin wrapper kept for callers/tests; the logic lives in backends."""
+    from .backends import estimate_cost
+
+    return estimate_cost(usage)
 
 
 def _run_headless(cfg: Config, topic: str, *, quiet: bool = False, verbose: bool = False) -> int:

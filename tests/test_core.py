@@ -10,6 +10,7 @@ iteration, and long-term memory — all without any API calls.
 """
 
 import asyncio
+import importlib.util
 import os
 import pathlib
 import sys
@@ -1029,6 +1030,19 @@ class TestCliHeadless(unittest.TestCase):
             self.assertIn("Confidence & Gaps", mds[0].read_text(encoding="utf-8"))
             if want_pdf:
                 self.assertEqual(len(list(pathlib.Path(d).glob("*.pdf"))), 1)
+
+
+class TestTUI(unittest.TestCase):
+    @unittest.skipUnless(importlib.util.find_spec("textual"), "textual not installed")
+    def test_app_constructs_with_new_actions_and_bindings(self):
+        from vibe_research.tui import VibeResearchApp
+
+        app = VibeResearchApp(cfgmod.default_config(), "topic")
+        for action in ("action_export_all", "action_open_report", "action_export_pdf"):
+            self.assertTrue(callable(getattr(app, action, None)), action)
+        keys = {b.key for b in VibeResearchApp.BINDINGS}
+        self.assertIn("ctrl+e", keys)  # export all
+        self.assertIn("ctrl+o", keys)  # open report
 
 
 if __name__ == "__main__":
