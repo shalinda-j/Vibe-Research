@@ -7,6 +7,13 @@ All notable changes to **vibe-research** are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **OpenAI engine** — `--mode openai` runs the whole pipeline on OpenAI models via
+  the Responses API (with web search), needing `OPENAI_API_KEY` and the `[openai]`
+  extra. Claude-named model defaults are auto-mapped to `gpt-4o` / `gpt-4o-mini`;
+  override with `--planner-model`/`--worker-model`. (OpenAI is pay-per-token — there
+  is no subscription API path.)
+- **TUI** now shows the **active engine + models** in the header and a **live
+  call/token counter** in the status line as the run progresses.
 - **TUI**: `Ctrl+E` exports the current report to every available format at once
   (HTML + PDF + DOCX + JSON), `Ctrl+O` opens the saved report, and completion now
   shows the **source-credibility tally** and a **cost estimate** — bringing the

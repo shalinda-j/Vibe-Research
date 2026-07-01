@@ -37,7 +37,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="Research a topic")
     run.add_argument("topic", nargs="+", help="The topic to research")
-    run.add_argument("--mode", choices=["auto", "api", "subscription"], help="Override backend mode")
+    run.add_argument("--mode", choices=["auto", "api", "subscription", "openai"], help="Override backend mode")
     run.add_argument("--no-tui", action="store_true", help="Run headless (print progress + report path)")
     run.add_argument("--parallel", type=int, help="Concurrent research threads")
     run.add_argument("--subquestions", type=int, help="How many sub-questions to research")
@@ -172,7 +172,9 @@ def cmd_doctor() -> int:
     print(f"  textual pkg     [{mark(avail['textual'])}] needed for the TUI")
     print(f"  anthropic pkg   [{mark(avail['anthropic'])}] needed for API mode")
     print(f"  claude-agent-sdk[{mark(avail['claude_agent_sdk'])}] needed for subscription mode")
+    print(f"  openai pkg      [{mark(avail['openai'])}] needed for OpenAI mode")
     print(f"  ANTHROPIC_API_KEY[{mark(avail['api_key_set'])}] set in environment")
+    print(f"  OPENAI_API_KEY  [{mark(avail['openai_key_set'])}] set in environment")
     try:
         print(f"  auto mode -> would use: {choose_mode('auto')}")
     except Exception as exc:
@@ -203,6 +205,8 @@ def cmd_doctor() -> int:
     print("  API mode:          pip install anthropic ; export ANTHROPIC_API_KEY=sk-ant-...")
     print("  Subscription mode: npm i -g @anthropic-ai/claude-code ; claude (/login) ;")
     print("                     pip install claude-agent-sdk ; unset ANTHROPIC_API_KEY")
+    print("  OpenAI mode:       pip install openai ; export OPENAI_API_KEY=sk-... ;")
+    print("                     run with --mode openai   (pay-per-token; no subscription API)")
     return 0
 
 
@@ -298,7 +302,7 @@ def _cost_estimate(usage: dict) -> str:
 
 
 def _run_headless(cfg: Config, topic: str, *, quiet: bool = False, verbose: bool = False) -> int:
-    from .backends import get_backend
+    from .backends import get_backend, resolve_models
     from .pipeline import run_kwargs_from_config, run_pipeline
     from .reports import save_json, save_report
 
@@ -310,6 +314,12 @@ def _run_headless(cfg: Config, topic: str, *, quiet: bool = False, verbose: bool
         except Exception as exc:
             print(f"[setup] {exc}")
             return 2
+        # Resolve models for the chosen provider (e.g. Claude names -> gpt-* for openai).
+        cfg.planner_model, cfg.worker_model = resolve_models(
+            backend.name, cfg.planner_model, cfg.worker_model
+        )
+        if not quiet:
+            print(f"engine: {backend.name} · {cfg.planner_model} + {cfg.worker_model}")
         backend.configure(
             max_retries=cfg.max_retries,
             call_timeout=cfg.call_timeout,

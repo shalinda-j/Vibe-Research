@@ -435,6 +435,8 @@ class TestConfig(unittest.TestCase):
         self.assertTrue(cfg.export_docx)
         cfgmod.apply_setting(cfg, "verifier_model", "some-model")
         self.assertEqual(cfg.verifier_model, "some-model")
+        cfgmod.apply_setting(cfg, "mode", "openai")
+        self.assertEqual(cfg.mode, "openai")
 
         with self.assertRaises(ValueError):
             cfgmod.apply_setting(cfg, "citations", "fancy")     # invalid choice
@@ -484,6 +486,49 @@ class TestModeSelection(unittest.TestCase):
     def test_explicit_modes_passthrough(self):
         self.assertEqual(choose_mode("api"), "api")
         self.assertEqual(choose_mode("subscription"), "subscription")
+        self.assertEqual(choose_mode("openai"), "openai")
+
+
+class TestOpenAI(unittest.TestCase):
+    def test_map_openai_model(self):
+        from vibe_research.backends import map_openai_model
+
+        self.assertEqual(map_openai_model("claude-opus-4-8"), "gpt-4o")
+        self.assertEqual(map_openai_model("claude-sonnet-4-6"), "gpt-4o-mini")
+        self.assertEqual(map_openai_model("gpt-4o"), "gpt-4o")   # explicit passthrough
+        self.assertEqual(map_openai_model("o3"), "o3")           # explicit passthrough
+        self.assertEqual(map_openai_model(""), "gpt-4o")         # fallback
+
+    def test_resolve_models(self):
+        from vibe_research.backends import resolve_models
+
+        self.assertEqual(
+            resolve_models("openai", "claude-opus-4-8", "claude-sonnet-4-6"),
+            ("gpt-4o", "gpt-4o-mini"),
+        )
+        self.assertEqual(
+            resolve_models("api", "claude-opus-4-8", "claude-sonnet-4-6"),
+            ("claude-opus-4-8", "claude-sonnet-4-6"),
+        )
+
+    def test_detect_available_has_openai_keys(self):
+        from vibe_research.backends import detect_available
+
+        avail = detect_available()
+        self.assertIn("openai", avail)
+        self.assertIn("openai_key_set", avail)
+
+    @unittest.skipUnless(importlib.util.find_spec("openai"), "openai not installed")
+    def test_openai_backend_requires_key(self):
+        from vibe_research.backends import OpenAIBackend
+
+        old = os.environ.pop("OPENAI_API_KEY", None)
+        try:
+            with self.assertRaises(RuntimeError):
+                OpenAIBackend()
+        finally:
+            if old is not None:
+                os.environ["OPENAI_API_KEY"] = old
 
 
 class TestReports(unittest.TestCase):
@@ -1043,6 +1088,20 @@ class TestTUI(unittest.TestCase):
         keys = {b.key for b in VibeResearchApp.BINDINGS}
         self.assertIn("ctrl+e", keys)  # export all
         self.assertIn("ctrl+o", keys)  # open report
+
+    @unittest.skipUnless(importlib.util.find_spec("textual"), "textual not installed")
+    def test_usage_str_reads_backend_tokens(self):
+        from vibe_research.tui import VibeResearchApp
+
+        app = VibeResearchApp(cfgmod.default_config())
+        self.assertEqual(app._usage_str(), "")   # no backend yet -> empty
+
+        backend = FlakyBackend(fail_times=0)
+        backend.calls, backend.input_tokens, backend.output_tokens = 3, 1200, 800
+        app._backend = backend
+        usage = app._usage_str()
+        self.assertIn("calls", usage)
+        self.assertIn("2.0k tok", usage)   # 1200 + 800 tokens
 
 
 if __name__ == "__main__":

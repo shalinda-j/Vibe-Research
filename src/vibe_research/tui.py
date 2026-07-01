@@ -21,7 +21,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Footer, Header, Input, Markdown, RichLog, Static
 
-from .backends import estimate_cost, get_backend
+from .backends import estimate_cost, get_backend, resolve_models
 from .config import Config
 from .pipeline import run_kwargs_from_config, run_pipeline
 from .reports import save_report
@@ -101,6 +101,7 @@ class VibeResearchApp(App):
         self._final_path = ""
         self._confidence = None
         self._result = None
+        self._backend = None
         self._last_topic = topic or ""
 
     # ---------------------------------------------------------------- layout
@@ -143,15 +144,33 @@ class VibeResearchApp(App):
         secs = int(time.monotonic() - self._t0) if self._t0 else 0
         return f"{secs // 60:d}:{secs % 60:02d}"
 
+    def _usage_str(self) -> str:
+        """Live calls + token count from the running backend (empty if none yet)."""
+        if not self._backend:
+            return ""
+        try:
+            u = self._backend.usage()
+        except Exception:
+            return ""
+        parts = []
+        if u.get("calls"):
+            parts.append(f"{u['calls']} calls")
+        tok = int(u.get("input_tokens", 0) or 0) + int(u.get("output_tokens", 0) or 0)
+        if tok:
+            parts.append(f"{tok / 1000:.1f}k tok" if tok >= 1000 else f"{tok} tok")
+        return "  ·  ".join(parts)
+
     def _refresh_status(self) -> None:
         status = self.query_one("#status", Static)
         if self._busy:
             spin = _SPINNER[self._tick % len(_SPINNER)]
             total = self._total_q or "?"
             counts = f"findings {self._done_q}/{total}  ·  {self._sources} src"
+            usage = self._usage_str()
+            usage_seg = f"  ·  {usage}" if usage else ""
             status.update(
                 f"{spin} [b]{self._stage or 'working'}[/b]  {_bar(self._pct)} "
-                f"{int(self._pct):>3d}%  ·  {self._elapsed()}  ·  {counts}  ·  {self.cfg.mode}"
+                f"{int(self._pct):>3d}%  ·  {self._elapsed()}  ·  {counts}{usage_seg}  ·  {self.cfg.mode}"
             )
         elif self._final_path:
             conf = f"  ·  [b]{self._confidence:.0%} confidence[/b]" if self._confidence is not None else ""
@@ -349,6 +368,7 @@ class VibeResearchApp(App):
         self._final_path = ""
         self._confidence = None
         self._result = None
+        self._backend = None
         self._last_topic = topic
         self._t0 = time.monotonic()
         self._tick = 0
@@ -447,6 +467,14 @@ class VibeResearchApp(App):
                     self._log(f"[dim]🐞 debug trace: {_esc(str(dbg))}[/dim]")
                 except Exception:
                     pass
+            # Resolve models for the chosen provider and surface them live.
+            self.cfg.planner_model, self.cfg.worker_model = resolve_models(
+                backend.name, self.cfg.planner_model, self.cfg.worker_model
+            )
+            self._backend = backend
+            self.sub_title = (
+                f"{backend.name} · {self.cfg.planner_model} + {self.cfg.worker_model}"
+            )
         except Exception as exc:
             self._log(f"[red]✗ {_esc(str(exc))}[/red]")
             self._report().update(

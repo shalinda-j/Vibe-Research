@@ -38,20 +38,27 @@ isn't the same as "safe to use unread for things that bite you."
 
 ---
 
-## Two engines, one tool
+## Three engines, one tool
 
-`vibe-research` can run on either of two backends. It **auto-detects** which to use,
-or you can force one with `--mode`.
+`vibe-research` can run on any of three backends. It **auto-detects** an Anthropic
+engine, or you can force one with `--mode`.
 
 | Mode | Engine | Billing | Best for |
 | --- | --- | --- | --- |
 | `api` | Anthropic Messages API | pay-per-token (Console) | products, multi-user, always-on |
 | `subscription` | Claude Agent SDK | draws from your Claude subscription | your own / internal use |
+| `openai` | OpenAI Responses API | pay-per-token (OpenAI) | using GPT models / web search |
 
 > **Subscription mode caveat.** Anthropic does not permit third-party apps to offer
 > claude.ai login to *other* users without prior approval, and the subscription-billing
 > path for the Agent SDK is something Anthropic has said it may change. Use subscription
 > mode for **your own** usage. For a customer-facing product, use `api` mode.
+
+> **OpenAI has no subscription API.** Unlike Claude's Agent SDK path, OpenAI API usage
+> is always metered per token against your OpenAI account — a ChatGPT Plus/Pro plan does
+> not grant programmatic access. Set `OPENAI_API_KEY` and run with `--mode openai`
+> (`pip install "vibe-research[openai]"`). Claude-named model defaults are auto-mapped to
+> `gpt-4o` / `gpt-4o-mini`; override with `--planner-model gpt-5` etc.
 
 ---
 
@@ -113,6 +120,7 @@ to be sure the subscription path is wired.
 vibe-research "your topic"                 # TUI (default)
 vibe-research run "your topic" --no-tui    # headless: prints progress + saves report
 vibe-research --mode subscription "topic"  # force subscription engine
+vibe-research --mode openai "topic"        # use OpenAI (needs OPENAI_API_KEY)
 vibe-research run "topic" --parallel 3 --subquestions 6
 
 # autonomy knobs
@@ -163,7 +171,7 @@ Stored at `~/.config/vibe-research/config.json`:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `mode` | `auto` | `auto`, `api`, or `subscription` |
+| `mode` | `auto` | `auto`, `api`, `subscription`, or `openai` |
 | `planner_model` | `claude-opus-4-8` | planning, fact-check, editing, write-up |
 | `worker_model` | `claude-sonnet-4-6` | the many web-search calls |
 | `max_parallel` | `2` | concurrent research threads |
@@ -269,7 +277,7 @@ orchestration logic without any API calls or network access.
 Bigger features that need live external services or are larger projects (open to
 contributions):
 
-- **Pluggable backends** — OpenAI / Gemini / local **Ollama**.
+- **More backends** — Google Gemini / local **Ollama** (OpenAI is supported).
 - **Local document RAG** — research over your own PDFs/notes.
 - **MCP server mode** — expose vibe-research as a tool to other agents.
 - **Recursive / multi-hop research** — drill deeper into a single finding.

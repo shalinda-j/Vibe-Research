@@ -50,6 +50,36 @@ def extract_urls(text: str) -> list[str]:
     return out
 
 
+# Map the Claude-named config defaults to sensible OpenAI equivalents so a user
+# can switch to `--mode openai` without re-picking every model. Explicit OpenAI
+# model names (gpt-*, o1/o3/o4-*, etc.) are passed through untouched.
+_OPENAI_STRONG = "gpt-4o"
+_OPENAI_FAST = "gpt-4o-mini"
+_OPENAI_MODEL_MAP = (
+    ("claude-opus", _OPENAI_STRONG),
+    ("claude-sonnet", _OPENAI_FAST),
+    ("claude-haiku", _OPENAI_FAST),
+)
+
+
+def map_openai_model(model: str) -> str:
+    """Translate a Claude-style model name to an OpenAI one; pass others through."""
+    low = (model or "").lower()
+    if not low.startswith("claude"):
+        return model or _OPENAI_STRONG
+    for prefix, target in _OPENAI_MODEL_MAP:
+        if low.startswith(prefix):
+            return target
+    return _OPENAI_STRONG
+
+
+def resolve_models(provider: str, planner: str, worker: str) -> tuple[str, str]:
+    """Resolve the effective (planner, worker) models for the chosen provider."""
+    if provider == "openai":
+        return map_openai_model(planner), map_openai_model(worker)
+    return planner, worker
+
+
 def estimate_cost(usage: dict) -> str:
     """A rough $ estimate from token counts (API mode only). Clearly approximate:
     the real cost depends on which model ran each stage. Empty for subscription
@@ -312,19 +342,87 @@ class SubscriptionBackend(Backend):
         return result, extract_urls(result)
 
 
+class OpenAIBackend(Backend):
+    """OpenAI models via the Responses API. Pay-per-token; needs OPENAI_API_KEY.
+
+    Note: OpenAI has no subscription-billed API (unlike Anthropic's Agent SDK
+    path) — API usage is always metered against your OpenAI account. Web search
+    uses the Responses API's built-in ``web_search_preview`` tool; override the
+    tool type with ``VIBE_OPENAI_SEARCH_TOOL`` if your account/model uses a
+    different name.
+    """
+
+    name = "openai"
+
+    def __init__(self) -> None:
+        super().__init__()
+        try:
+            from openai import AsyncOpenAI
+        except ImportError as exc:
+            raise RuntimeError(
+                "OpenAI mode needs the 'openai' package.\n"
+                "    pip install openai\n"
+                '    (or: pip install "vibe-research[openai]")'
+            ) from exc
+        if not os.environ.get("OPENAI_API_KEY"):
+            raise RuntimeError(
+                "OpenAI mode needs OPENAI_API_KEY.\n"
+                "    Get a key at https://platform.openai.com/api-keys\n"
+                "    export OPENAI_API_KEY=sk-...\n"
+                "    (OpenAI bills per token — there is no subscription API path.)"
+            )
+        self._client = AsyncOpenAI()
+        self._search_tool = os.environ.get("VIBE_OPENAI_SEARCH_TOOL", "web_search_preview")
+
+    async def _complete_once(
+        self, prompt: str, model: str, use_search: bool = False
+    ) -> tuple[str, list[str]]:
+        model = map_openai_model(model)
+        kwargs = {"model": model, "input": prompt}
+        if use_search:
+            kwargs["tools"] = [{"type": self._search_tool}]
+        response = await self._client.responses.create(**kwargs)
+
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            self.input_tokens += int(getattr(usage, "input_tokens", 0) or 0)
+            self.output_tokens += int(getattr(usage, "output_tokens", 0) or 0)
+
+        text = getattr(response, "output_text", "") or ""
+        urls: list[str] = []
+        for item in getattr(response, "output", None) or []:
+            for content in getattr(item, "content", None) or []:
+                for ann in getattr(content, "annotations", None) or []:
+                    url = getattr(ann, "url", None)
+                    if url and url not in urls:
+                        urls.append(url)
+        for url in extract_urls(text):
+            if url not in urls:
+                urls.append(url)
+        return text, urls
+
+    async def aclose(self) -> None:
+        try:
+            await self._client.close()
+        except Exception:
+            pass
+
+
 def detect_available() -> dict:
     """Report which backends' prerequisites are present. Never imports them."""
     return {
         "anthropic": importlib.util.find_spec("anthropic") is not None,
         "claude_agent_sdk": importlib.util.find_spec("claude_agent_sdk") is not None,
+        "openai": importlib.util.find_spec("openai") is not None,
         "textual": importlib.util.find_spec("textual") is not None,
         "api_key_set": bool(os.environ.get("ANTHROPIC_API_KEY")),
+        "openai_key_set": bool(os.environ.get("OPENAI_API_KEY")),
     }
 
 
 def choose_mode(mode: str) -> str:
     """Resolve 'auto' to a concrete backend name, or validate an explicit choice."""
-    if mode in ("api", "subscription"):
+    if mode in ("api", "subscription", "openai"):
         return mode
     avail = detect_available()
     if avail["api_key_set"]:
@@ -347,4 +445,8 @@ def choose_mode(mode: str) -> str:
 
 def get_backend(mode: str = "auto") -> Backend:
     chosen = choose_mode(mode)
-    return APIBackend() if chosen == "api" else SubscriptionBackend()
+    if chosen == "openai":
+        return OpenAIBackend()
+    if chosen == "api":
+        return APIBackend()
+    return SubscriptionBackend()
