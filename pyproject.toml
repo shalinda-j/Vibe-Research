@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vibe-research"
+version = "0.3.0"
+description = "Autonomous, fully-cited multi-agent research crew for your terminal (TUI + CLI)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Don Hett" }]
+keywords = ["research", "ai", "claude", "tui", "cli", "agent", "deep-research"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "textual>=0.80",
+    "anthropic>=0.40",
+]
+
+[project.optional-dependencies]
+subscription = ["claude-agent-sdk"]
+pdf = ["fpdf2>=2.7"]
+dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://github.com/yourname/vibe-research"
+
+[project.scripts]
+vibe-research = "vibe_research.cli:main"
+vibere = "vibe_research.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
