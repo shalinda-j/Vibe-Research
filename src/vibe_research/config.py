@@ -68,6 +68,13 @@ class Config:
     only_domains: str = ""                   # comma-sep domain substrings to keep
     block_domains: str = ""                  # comma-sep domain substrings to drop
 
+    # --- writing style / length / visuals ------------------------------------
+    prose_style: str = "report"              # report | essay | brief
+    words: int = 0                           # target word count (0 = model decides)
+    enable_charts: bool = True               # render ```chart data blocks to images
+    enable_diagrams: bool = True             # allow ```mermaid diagrams
+    enable_figures: bool = True              # allow embedded figure/image references
+
     # --- output --------------------------------------------------------------
     export_pdf: bool = False                  # also write a PDF beside each report
     export_html: bool = False                 # also write an HTML page beside each report
@@ -122,14 +129,16 @@ def save_config(cfg: Config) -> Path:
 
 
 _INT_FIELDS = {"max_parallel", "subquestions", "max_iterations", "verifier_votes", "max_concurrency"}
-_NONNEG_INT_FIELDS = {"max_retries", "call_timeout", "since_year"}   # 0 is meaningful (off)
+_NONNEG_INT_FIELDS = {"max_retries", "call_timeout", "since_year", "words"}   # 0 is meaningful (off)
 _FLOAT_FIELDS = {"quality_threshold"}
 _BOOL_FIELDS = {
     "enable_debate", "enable_memory", "humanize",
     "export_pdf", "export_html", "export_json", "export_docx", "open_after", "debug",
+    "enable_charts", "enable_diagrams", "enable_figures",
 }
 _ALLOWED_MODES = {"auto", "api", "subscription", "openai"}
 _ALLOWED_CITATIONS = {"ranked", "plain"}
+_ALLOWED_STYLES = {"report", "essay", "brief"}
 _TRUE = {"1", "true", "yes", "on", "y"}
 _FALSE = {"0", "false", "no", "off", "n"}
 
@@ -170,6 +179,10 @@ def apply_setting(cfg: Config, key: str, value: str) -> None:
         setattr(cfg, key, value)
     elif key == "citations":
         if value not in _ALLOWED_CITATIONS:
+            raise ValueError(value)
+        setattr(cfg, key, value)
+    elif key == "prose_style":
+        if value not in _ALLOWED_STYLES:
             raise ValueError(value)
         setattr(cfg, key, value)
     else:

@@ -298,6 +298,49 @@ class EditorAgent(Agent):
             return Critique(approved=True, quality=0.5, note="editor output unavailable")
 
 
+def _style_instructions(
+    prose_style: str,
+    target_words: int,
+    enable_charts: bool,
+    enable_diagrams: bool,
+    enable_figures: bool,
+) -> str:
+    """Build the writer's style/length/visuals guidance from the run options."""
+    lines = ["\nWRITING STYLE:\n"]
+    if prose_style == "essay":
+        lines.append("- Write as a flowing essay: connected paragraphs, minimal headings, a clear narrative arc.\n")
+    elif prose_style == "brief":
+        lines.append("- Be concise and executive: short paragraphs, only the most important points.\n")
+    else:  # report
+        lines.append(
+            "- Use well-developed, flowing paragraphs under each heading. Avoid long "
+            "bullet lists — prefer prose; use bullets only for genuinely enumerable items.\n"
+        )
+    if target_words and target_words > 0:
+        lines.append(
+            f"- Aim for approximately {target_words} words (within ~10%). Develop the "
+            "analysis fully to reach this length; never pad with filler.\n"
+        )
+    if enable_charts:
+        lines.append(
+            '- When findings contain quantitative data worth visualising, insert a fenced '
+            '```chart block with a JSON spec: {"type":"bar"|"line"|"pie", "title":"...", '
+            '"labels":[...], "series":[{"name":"...", "data":[numbers]}]}. Use ONLY real '
+            "numbers from the findings; omit charts entirely if there is no real data.\n"
+        )
+    if enable_diagrams:
+        lines.append(
+            "- For a process, relationship, or timeline, include a fenced ```mermaid "
+            "diagram (e.g. `flowchart TD` or `timeline`) where it genuinely aids understanding.\n"
+        )
+    if enable_figures:
+        lines.append(
+            "- Where a source provides a directly relevant figure/image, embed it with "
+            "![caption](image_url) and name the source; use ONLY real image URLs from the findings.\n"
+        )
+    return "".join(lines)
+
+
 class SynthesizerAgent(Agent):
     """Writer: turn validated findings + fact-checks into the final report."""
 
@@ -310,6 +353,12 @@ class SynthesizerAgent(Agent):
         verifications: list[VerificationReport],
         critique: Critique,
         overall_confidence: float,
+        *,
+        target_words: int = 0,
+        prose_style: str = "report",
+        enable_charts: bool = True,
+        enable_diagrams: bool = True,
+        enable_figures: bool = True,
     ) -> str:
         blocks = []
         for finding, verification in zip(findings, verifications):
@@ -334,8 +383,10 @@ class SynthesizerAgent(Agent):
             f"- End with a section '## Confidence & Gaps' (overall confidence "
             f"{overall_confidence:.0%}) that honestly states what is well-established "
             "versus uncertain, and lists remaining gaps.\n"
-            "- Do NOT invent facts or sources.\n\n"
-            f"EDITOR ISSUES TO ADDRESS: {editor_notes}\n\n"
+            "- Do NOT invent facts or sources.\n"
+            + _style_instructions(prose_style, target_words, enable_charts,
+                                  enable_diagrams, enable_figures)
+            + f"\nEDITOR ISSUES TO ADDRESS: {editor_notes}\n\n"
             f"FINDINGS:\n{dump}"
         )
         try:

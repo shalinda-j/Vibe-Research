@@ -101,6 +101,11 @@ def run_kwargs_from_config(cfg) -> dict:
         only_domains=only,
         block_domains=block,
         citations=cfg.citations,
+        target_words=cfg.words,
+        prose_style=cfg.prose_style,
+        enable_charts=cfg.enable_charts,
+        enable_diagrams=cfg.enable_diagrams,
+        enable_figures=cfg.enable_figures,
         memory=memory,
     )
 
@@ -223,6 +228,11 @@ async def run_pipeline(
     only_domains: list[str] | None = None,
     block_domains: list[str] | None = None,
     citations: str = "ranked",
+    target_words: int = 0,
+    prose_style: str = "report",
+    enable_charts: bool = True,
+    enable_diagrams: bool = True,
+    enable_figures: bool = True,
     memory=None,
     on_event: EventCallback = _noop,
 ) -> str:
@@ -353,7 +363,10 @@ async def run_pipeline(
     on_event("stage", {"stage": "write", "msg": "Writing report"})
     overall = _overall_confidence(verifications)
     report = await writer.write(
-        topic, findings, verifications, critique or Critique(approved=True), overall
+        topic, findings, verifications, critique or Critique(approved=True), overall,
+        target_words=target_words, prose_style=prose_style,
+        enable_charts=enable_charts, enable_diagrams=enable_diagrams,
+        enable_figures=enable_figures,
     )
 
     # --- humanize -------------------------------------------------------------

@@ -4,9 +4,16 @@ All notable changes to **vibe-research** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project uses
 [semantic versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.0]
 
 ### Added
+- **Visuals in reports** — the writer can emit **data charts** (```chart` JSON
+  specs rendered to PNG via matplotlib, `[charts]` extra), **Mermaid diagrams**
+  (rendered live in the HTML export), and **figure/image references** with source
+  attribution. Charts and local images are embedded in the PDF and DOCX exports too.
+- **Length & style control** — `--words N` / `--pages N` target a report length,
+  and `--style report|essay|brief` sets the prose style (flowing paragraphs, not
+  bullet dumps). `--no-charts` / `--no-diagrams` / `--no-figures` opt out.
 - **OpenAI engine** — `--mode openai` runs the whole pipeline on OpenAI models via
   the Responses API (with web search), needing `OPENAI_API_KEY` and the `[openai]`
   extra. Claude-named model defaults are auto-mapped to `gpt-4o` / `gpt-4o-mini`;

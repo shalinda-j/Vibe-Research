@@ -23,6 +23,7 @@ from vibe_research.backends import Backend, choose_mode, extract_urls  # noqa: E
 from vibe_research import config as cfgmod  # noqa: E402
 from vibe_research import enrich  # noqa: E402
 from vibe_research import export as exportmod  # noqa: E402
+from vibe_research import visuals  # noqa: E402
 from vibe_research import reports as reportsmod  # noqa: E402
 from vibe_research import schemas  # noqa: E402
 from vibe_research.agents import (  # noqa: E402
@@ -438,6 +439,17 @@ class TestConfig(unittest.TestCase):
         cfgmod.apply_setting(cfg, "mode", "openai")
         self.assertEqual(cfg.mode, "openai")
 
+        # v0.5 writing/visuals knobs
+        cfgmod.apply_setting(cfg, "words", "1500")
+        self.assertEqual(cfg.words, 1500)
+        cfgmod.apply_setting(cfg, "words", "0")             # 0 allowed (off)
+        cfgmod.apply_setting(cfg, "prose_style", "essay")
+        self.assertEqual(cfg.prose_style, "essay")
+        cfgmod.apply_setting(cfg, "enable_charts", "false")
+        self.assertFalse(cfg.enable_charts)
+        with self.assertRaises(ValueError):
+            cfgmod.apply_setting(cfg, "prose_style", "novel")   # invalid choice
+
         with self.assertRaises(ValueError):
             cfgmod.apply_setting(cfg, "citations", "fancy")     # invalid choice
         with self.assertRaises(ValueError):
@@ -652,6 +664,19 @@ class TestAgents(unittest.TestCase):
         finding = Finding.build("q", "a", ["https://a.com"])
         report = asyncio.run(VerifierAgent(FailVerifyBackend(), "m").debate("t", finding, votes=2))
         self.assertIsInstance(report, VerificationReport)  # abstains, does not raise
+
+    def test_style_instructions(self):
+        from vibe_research.agents import _style_instructions
+
+        full = _style_instructions("essay", 1500, True, True, True)
+        self.assertIn("essay", full.lower())
+        self.assertIn("1500", full)
+        self.assertIn("chart", full.lower())
+        self.assertIn("mermaid", full.lower())
+        minimal = _style_instructions("report", 0, False, False, False)
+        self.assertNotIn("1500", minimal)
+        self.assertNotIn("```chart", minimal)
+        self.assertNotIn("mermaid", minimal.lower())
 
     def test_humanizer_keeps_rewrite_when_sources_preserved(self):
         from vibe_research.agents import HumanizerAgent
@@ -948,6 +973,53 @@ class TestEnrich(unittest.TestCase):
         self.assertIn("low", summary)
 
 
+class TestVisuals(unittest.TestCase):
+    def test_count_words_ignores_code(self):
+        self.assertEqual(visuals.count_words("one two three"), 3)
+        self.assertEqual(visuals.count_words("a b\n```\nx y z q\n```\nc"), 3)
+
+    def test_parse_chart_spec(self):
+        spec = visuals.parse_chart_spec(
+            '{"type":"bar","title":"T","labels":["a","b"],"series":[{"name":"s","data":[1,2]}]}'
+        )
+        self.assertEqual(spec["type"], "bar")
+        self.assertEqual(spec["series"][0]["data"], [1.0, 2.0])
+        # single-series via 'values'
+        spec2 = visuals.parse_chart_spec('{"labels":["a"],"values":[5]}')
+        self.assertEqual(spec2["series"][0]["data"], [5.0])
+        self.assertIsNone(visuals.parse_chart_spec("not json"))
+        self.assertIsNone(visuals.parse_chart_spec('{"labels":["a"]}'))  # no data
+
+    @unittest.skipUnless(visuals.charts_available(), "matplotlib not installed")
+    def test_render_chart_writes_png(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = pathlib.Path(d) / "c.png"
+            spec = visuals.parse_chart_spec('{"type":"line","labels":["a","b","c"],"values":[1,2,3]}')
+            self.assertIsNotNone(visuals.render_chart(spec, out))
+            self.assertGreater(out.stat().st_size, 0)
+
+    @unittest.skipUnless(visuals.charts_available(), "matplotlib not installed")
+    def test_render_report_charts_replaces_block(self):
+        with tempfile.TemporaryDirectory() as d:
+            report = 'Intro\n\n```chart\n{"type":"bar","labels":["a"],"values":[3]}\n```\n\nEnd'
+            out = visuals.render_report_charts(report, d, "rep")
+            self.assertIn("![", out)
+            self.assertIn(".png", out)
+            self.assertNotIn("```chart", out)
+            self.assertEqual(len([f for f in os.listdir(d) if f.endswith(".png")]), 1)
+
+    def test_render_report_charts_table_fallback(self):
+        orig = visuals.render_chart
+        visuals.render_chart = lambda spec, out: None   # simulate no matplotlib
+        try:
+            report = '```chart\n{"type":"bar","labels":["a","b"],"values":[1,2]}\n```'
+            out = visuals.render_report_charts(report, ".", "x")
+            self.assertIn("| Category |", out)   # table fallback, no data lost
+            self.assertNotIn("```chart", out)
+        finally:
+            visuals.render_chart = orig
+
+
 class TestCLI(unittest.TestCase):
     def _cfg_from(self, **kwargs):
         import argparse
@@ -966,6 +1038,13 @@ class TestCLI(unittest.TestCase):
         cfg = self._cfg_from(depth="quick", subquestions=6)
         self.assertEqual(cfg.subquestions, 6)       # explicit beats preset
         self.assertEqual(cfg.verifier_votes, 1)     # rest still from 'quick'
+
+    def test_pages_maps_to_words(self):
+        self.assertEqual(self._cfg_from(pages=3).words, 1500)
+        self.assertEqual(self._cfg_from(words=800).words, 800)
+
+    def test_style_flag(self):
+        self.assertEqual(self._cfg_from(style="essay").prose_style, "essay")
 
     def test_cost_estimate(self):
         from vibe_research import cli
@@ -990,6 +1069,18 @@ class TestExport(unittest.TestCase):
 
     def test_docx_path_for(self):
         self.assertEqual(exportmod.docx_path_for("a/b.md").suffix, ".docx")
+
+    def test_html_renders_mermaid(self):
+        html = exportmod.markdown_to_html("# T\n\n```mermaid\nflowchart TD\n  A-->B\n```\n")
+        self.assertIn('class="mermaid"', html)
+        self.assertIn("mermaid.esm.min.mjs", html)
+        self.assertIn("A--&gt;B" if False else "A-->B", html)  # arrow preserved, unescaped
+
+    def test_resolve_images_makes_local_absolute_keeps_remote(self):
+        out = exportmod._resolve_images("![c](chart-1.png) ![w](https://x.com/i.png)", "/base/dir")
+        norm = out.replace("\\", "/")
+        self.assertIn("/base/dir", norm)               # relative -> absolute
+        self.assertIn("https://x.com/i.png", out)      # remote untouched
 
     @unittest.skipUnless(exportmod.docx_available(), "python-docx not installed")
     def test_markdown_to_docx_writes_file(self):

@@ -141,6 +141,11 @@ vibe-research run "topic" --citations plain     # plain source list (default: ra
 # per-stage models
 vibe-research run "topic" --writer-model claude-opus-4-8 --verifier-model claude-sonnet-4-6
 
+# length, style & visuals
+vibe-research run "topic" --words 1500          # target length (or --pages 3)
+vibe-research run "topic" --style essay         # report | essay | brief
+vibe-research run "topic" --no-charts --no-diagrams   # opt out of visuals
+
 # output & UX
 vibe-research run "topic" --pdf --html --json --docx   # PDF, HTML, JSON sidecar, Word doc
 vibe-research run "topic" --open                # open the report when it's done
@@ -187,6 +192,9 @@ Stored at `~/.config/vibe-research/config.json`:
 | `only_domains` | `""` | comma-sep domain substrings to keep (e.g. `gov,edu`) |
 | `block_domains` | `""` | comma-sep domain substrings to drop (e.g. `reddit.com`) |
 | `verifier_model` / `writer_model` / `humanizer_model` | `""` | per-stage model overrides (empty → planner model) |
+| `prose_style` | `report` | `report`, `essay`, or `brief` writing style |
+| `words` | `0` | target word count (`0` = model decides) |
+| `enable_charts` / `enable_diagrams` / `enable_figures` | `true` | allow data charts / mermaid diagrams / figures |
 | `export_pdf` | `false` | also write a PDF beside every saved report |
 | `export_html` | `false` | also write a styled HTML page beside every report |
 | `export_json` | `false` | also write a structured JSON sidecar (findings + verdicts) |

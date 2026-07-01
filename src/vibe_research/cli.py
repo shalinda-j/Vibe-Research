@@ -71,6 +71,12 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--humanizer-model", help="Model for the human-voice rewrite (default: planner model)")
     run.add_argument("--docx", action="store_true", help="Also export the report as a Word .docx")
     run.add_argument("--debug", action="store_true", help="Write a JSONL trace of every model call")
+    run.add_argument("--words", type=int, metavar="N", help="Target word count for the report")
+    run.add_argument("--pages", type=int, metavar="N", help="Target page count (~500 words/page)")
+    run.add_argument("--style", choices=["report", "essay", "brief"], help="Writing style")
+    run.add_argument("--no-charts", action="store_true", help="Don't render data charts")
+    run.add_argument("--no-diagrams", action="store_true", help="Don't include mermaid diagrams")
+    run.add_argument("--no-figures", action="store_true", help="Don't embed figure/image references")
 
     sub.add_parser("doctor", help="Check environment, dependencies, and auth")
 
@@ -158,6 +164,18 @@ def _cfg_from_args(cfg: Config, args: argparse.Namespace) -> Config:
         cfg.export_docx = True
     if getattr(args, "debug", False):
         cfg.debug = True
+    if getattr(args, "words", None) is not None:
+        cfg.words = args.words
+    if getattr(args, "pages", None) is not None:
+        cfg.words = max(0, args.pages) * 500   # ~500 words per page
+    if getattr(args, "style", None):
+        cfg.prose_style = args.style
+    if getattr(args, "no_charts", False):
+        cfg.enable_charts = False
+    if getattr(args, "no_diagrams", False):
+        cfg.enable_diagrams = False
+    if getattr(args, "no_figures", False):
+        cfg.enable_figures = False
     return cfg
 
 
@@ -192,13 +210,20 @@ def cmd_doctor() -> int:
     print(f"  memory          {'ON — ' + str(cfg.resolved_memory_dir()) if cfg.enable_memory else 'off'}")
     print(f"  citations       {cfg.citations} references"
           + (f" · since {cfg.since_year}" if cfg.since_year else ""))
+    visuals = [v for v, on in (("charts", cfg.enable_charts), ("diagrams", cfg.enable_diagrams),
+                               ("figures", cfg.enable_figures)) if on]
+    print(f"  writing         {cfg.prose_style} style"
+          + (f" · ~{cfg.words} words" if cfg.words else "")
+          + (f" · {', '.join(visuals)}" if visuals else ""))
     print(f"  reliability     retry x{cfg.max_retries} · timeout {cfg.call_timeout}s · "
           f"max {cfg.max_concurrency} concurrent")
 
     from .export import docx_available, pdf_available
-    pdf_ok, docx_ok = pdf_available(), docx_available()
+    from .visuals import charts_available
+    pdf_ok, docx_ok, charts_ok = pdf_available(), docx_available(), charts_available()
     print(f"  pdf export      [{mark(pdf_ok)}] {'ready (run/TUI: --pdf, Ctrl+P)' if pdf_ok else 'needs: pip install fpdf2'}")
     print(f"  docx export     [{mark(docx_ok)}] {'ready (run: --docx)' if docx_ok else 'needs: pip install python-docx'}")
+    print(f"  data charts     [{mark(charts_ok)}] {'ready (matplotlib)' if charts_ok else 'needs: pip install matplotlib'}")
     print(f"  html/json       [OK ] always available (run: --html, --json)")
     print()
     print("Setup tips:")
@@ -383,6 +408,15 @@ def _run_headless(cfg: Config, topic: str, *, quiet: bool = False, verbose: bool
         result = result_holder.get("result") or None
         reports_dir = cfg.resolved_reports_dir()
         path = save_report(reports_dir, topic, report, meta=result)
+        # Render any ```chart data blocks the writer emitted into PNGs next to the
+        # report, then rewrite the .md so every export picks up the images.
+        if cfg.enable_charts:
+            from .visuals import render_report_charts
+
+            saved_md = path.read_text(encoding="utf-8")
+            rendered = render_report_charts(saved_md, reports_dir, path.stem)
+            if rendered != saved_md:
+                path.write_text(rendered, encoding="utf-8")
         saved_md = path.read_text(encoding="utf-8")
         outputs: list[tuple[str, Path]] = [("Report", path)]
 
@@ -391,7 +425,7 @@ def _run_headless(cfg: Config, topic: str, *, quiet: bool = False, verbose: bool
         if cfg.export_pdf:
             from .export import markdown_to_pdf, pdf_path_for
             try:
-                outputs.append(("PDF", markdown_to_pdf(saved_md, pdf_path_for(path), title=topic)))
+                outputs.append(("PDF", markdown_to_pdf(saved_md, pdf_path_for(path), title=topic, base_dir=reports_dir)))
             except Exception as exc:
                 print(f"⚠ PDF export skipped: {exc}")
         if cfg.export_html:
@@ -403,13 +437,18 @@ def _run_headless(cfg: Config, topic: str, *, quiet: bool = False, verbose: bool
         if cfg.export_docx:
             from .export import docx_path_for, markdown_to_docx
             try:
-                outputs.append(("DOCX", markdown_to_docx(saved_md, docx_path_for(path), title=topic)))
+                outputs.append(("DOCX", markdown_to_docx(saved_md, docx_path_for(path), title=topic, base_dir=reports_dir)))
             except Exception as exc:
                 print(f"⚠ DOCX export skipped: {exc}")
 
         for label, out in outputs:
             print(f"✔ {label}: {out}")
         if not quiet:
+            from .visuals import count_words
+
+            wc = count_words(saved_md)
+            target = f" (target {cfg.words})" if cfg.words else ""
+            print(f"  length: {wc} words{target}")
             if result and result.get("credibility"):
                 print(f"  sources: {result['credibility']}")
             try:

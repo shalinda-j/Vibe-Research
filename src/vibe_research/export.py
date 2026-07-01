@@ -15,6 +15,7 @@ fpdf2 installed.
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -70,6 +71,26 @@ def _find_unicode_font() -> tuple[Path, Path, Path, Path] | None:
     return None
 
 
+_IMG_REF = re.compile(r"(!\[[^\]]*\]\()([^)]+)(\))")
+
+
+def _resolve_images(markdown: str, base_dir) -> str:
+    """Rewrite relative image paths to absolute (against base_dir) so PDF/DOCX
+    renderers — which don't know the report's directory — can find local charts."""
+    if not base_dir:
+        return markdown
+    base = Path(base_dir)
+
+    def _sub(match):
+        src = match.group(2).strip()
+        if src.startswith(("http://", "https://", "data:")) or Path(src).is_absolute():
+            return match.group(0)
+        # POSIX-style path: fpdf2's write_html percent-encodes backslashes.
+        return match.group(1) + (base / src).resolve().as_posix() + match.group(3)
+
+    return _IMG_REF.sub(_sub, markdown or "")
+
+
 def pdf_available() -> bool:
     """True if the PDF engine (fpdf2) is importable — probe without importing it."""
     return importlib.util.find_spec("fpdf") is not None
@@ -80,7 +101,7 @@ def _latin1_safe(text: str) -> str:
     return text.encode("latin-1", "replace").decode("latin-1")
 
 
-def markdown_to_pdf(markdown: str, out_path: Path | str, title: str = "") -> Path:
+def markdown_to_pdf(markdown: str, out_path: Path | str, title: str = "", base_dir=None) -> Path:
     """Render a Markdown report to a PDF file and return its path.
 
     Raises ``RuntimeError`` with install instructions if fpdf2 is missing.
@@ -95,6 +116,7 @@ def markdown_to_pdf(markdown: str, out_path: Path | str, title: str = "") -> Pat
         ) from exc
     from markdown_it import MarkdownIt
 
+    markdown = _resolve_images(markdown, base_dir)
     html = MarkdownIt("commonmark").enable("table").render(markdown or "")
     fonts = _find_unicode_font()
 
@@ -179,6 +201,8 @@ _HTML_TEMPLATE = """\
   th, td {{ border: 1px solid #ddd; padding: .5em .7em; text-align: left; }}
   th {{ background: #f6f8fa; }}
   hr {{ border: none; border-top: 1px solid #eee; margin: 2em 0; }}
+  img {{ max-width: 100%; height: auto; display: block; margin: 1.2em auto; border-radius: 6px; }}
+  .mermaid {{ text-align: center; margin: 1.6em 0; }}
   footer {{ margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #eee;
             color: #888; font-size: .85rem; }}
   @media (prefers-color-scheme: dark) {{
@@ -197,11 +221,44 @@ _HTML_TEMPLATE = """\
 """
 
 
+_MERMAID_CODE = re.compile(
+    r'<pre><code class="language-mermaid">(.*?)</code></pre>', re.DOTALL
+)
+_MERMAID_CDN = (
+    '<script type="module">'
+    'import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";'
+    'mermaid.initialize({ startOnLoad: true, theme: "neutral" });'
+    "</script>"
+)
+
+
+def _mermaidify(html: str) -> tuple[str, bool]:
+    """Turn ```mermaid code blocks into mermaid.js <div>s. Returns (html, had_any)."""
+    found = {"any": False}
+
+    def _sub(match):
+        found["any"] = True
+        content = (
+            match.group(1)
+            .replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
+        )
+        return f'<div class="mermaid">{content}</div>'
+
+    return _MERMAID_CODE.sub(_sub, html), found["any"]
+
+
 def markdown_to_html(markdown: str, title: str = "") -> str:
-    """Render a Markdown report into a standalone, styled HTML document string."""
+    """Render a Markdown report into a standalone, styled HTML document string.
+
+    ```mermaid` blocks become live diagrams (rendered by mermaid.js), and image
+    references (rendered charts, figures) become responsive ``<img>`` tags.
+    """
     from markdown_it import MarkdownIt
 
     body = MarkdownIt("commonmark").enable("table").render(markdown or "")
+    body, has_mermaid = _mermaidify(body)
+    if has_mermaid:
+        body += "\n" + _MERMAID_CDN
     safe_title = (title or "vibe-research report").replace("<", "&lt;").replace(">", "&gt;")
     return _HTML_TEMPLATE.format(title=safe_title, body=body)
 
@@ -253,6 +310,18 @@ def _emit_docx_inline(paragraph, inline) -> None:
         elif kind == "code_inline":
             run = paragraph.add_run(child.content)
             run.font.name = "Consolas"
+        elif kind == "image":
+            src = child.attrGet("src") or ""
+            try:
+                if src and not src.startswith(("http://", "https://", "data:")) and Path(src).is_file():
+                    from docx.shared import Inches
+
+                    paragraph.add_run().add_picture(str(src), width=Inches(6.0))
+                else:  # remote/missing image -> show its caption as a placeholder
+                    run = paragraph.add_run(f"[{child.content or 'image'}]")
+                    run.italic = True
+            except Exception:
+                pass
         elif kind == "text":
             run = paragraph.add_run(child.content)
             run.bold = bold
@@ -292,13 +361,13 @@ def _consume_docx_table(document, tokens, start: int) -> int:
     return i
 
 
-def markdown_to_docx(markdown: str, out_path: Path | str, title: str = "") -> Path:
+def markdown_to_docx(markdown: str, out_path: Path | str, title: str = "", base_dir=None) -> Path:
     """Render a Markdown report to a Word ``.docx`` file and return its path.
 
     Handles headings (with inline formatting), paragraphs, bold/italic, links
-    (text + URL), ordered and bullet lists, code blocks, and tables (rendered as
-    Word tables). Raises ``RuntimeError`` with install instructions if
-    python-docx is missing.
+    (text + URL), ordered and bullet lists, code blocks, tables (rendered as Word
+    tables), and embedded local images (e.g. rendered charts). Raises
+    ``RuntimeError`` with install instructions if python-docx is missing.
     """
     try:
         import docx
@@ -311,6 +380,7 @@ def markdown_to_docx(markdown: str, out_path: Path | str, title: str = "") -> Pa
         ) from exc
     from markdown_it import MarkdownIt
 
+    markdown = _resolve_images(markdown, base_dir)
     document = docx.Document()
     if title:
         document.add_heading(title, level=0)

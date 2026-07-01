@@ -234,7 +234,8 @@ class VibeResearchApp(App):
             else:
                 out = self.cfg.resolved_reports_dir() / "report.pdf"
             path = markdown_to_pdf(
-                self._report_text, out, title=self._last_topic or "vibe-research report"
+                self._report_text, out, title=self._last_topic or "vibe-research report",
+                base_dir=out.parent,
             )
             self._log(f"[green]✔ PDF exported: {_esc(str(path))}[/green]")
         except Exception as exc:
@@ -265,9 +266,9 @@ class VibeResearchApp(App):
 
             made.append(markdown_to_html_file(md, html_path_for(base), title=title))
             if pdf_available():
-                made.append(markdown_to_pdf(md, pdf_path_for(base), title=title))
+                made.append(markdown_to_pdf(md, pdf_path_for(base), title=title, base_dir=base.parent))
             if docx_available():
-                made.append(markdown_to_docx(md, docx_path_for(base), title=title))
+                made.append(markdown_to_docx(md, docx_path_for(base), title=title, base_dir=base.parent))
         except Exception as exc:
             self._log(f"[red]Export error: {_esc(str(exc))}[/red]")
         if self._result:
@@ -328,7 +329,7 @@ class VibeResearchApp(App):
                 from .export import docx_path_for, markdown_to_docx
 
                 md = path.read_text(encoding="utf-8")
-                dp = markdown_to_docx(md, docx_path_for(path), title=topic)
+                dp = markdown_to_docx(md, docx_path_for(path), title=topic, base_dir=path.parent)
                 self._log(f"[green]✔ DOCX: {_esc(str(dp))}[/green]")
             except Exception as exc:
                 self._log(f"[red]DOCX export failed: {_esc(str(exc))}[/red]")
@@ -492,7 +493,21 @@ class VibeResearchApp(App):
             )
             self._report_text = report
             self._report().update(report)
-            path = save_report(self.cfg.resolved_reports_dir(), topic, report, meta=self._result)
+            reports_dir = self.cfg.resolved_reports_dir()
+            path = save_report(reports_dir, topic, report, meta=self._result)
+            # Render any ```chart blocks into PNGs next to the report.
+            if self.cfg.enable_charts:
+                try:
+                    from .visuals import render_report_charts
+
+                    md0 = path.read_text(encoding="utf-8")
+                    md1 = render_report_charts(md0, reports_dir, path.stem)
+                    if md1 != md0:
+                        path.write_text(md1, encoding="utf-8")
+                        self._report_text = md1
+                        self._report().update(md1)
+                except Exception:
+                    pass
             self._final_path = str(path)
             self._pct = 100.0
             self._log(f"[green]✔ Done. Saved to {_esc(str(path))}[/green]")
