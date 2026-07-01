@@ -259,12 +259,46 @@ def _emit_docx_inline(paragraph, inline) -> None:
             run.italic = italic
 
 
+def _consume_docx_table(document, tokens, start: int) -> int:
+    """Render a markdown-it table (from ``table_open`` at ``start``) as a Word
+    table. Returns the index of the matching ``table_close``."""
+    rows: list[list] = []
+    current: list | None = None
+    i = start + 1
+    while i < len(tokens) and tokens[i].type != "table_close":
+        kind = tokens[i].type
+        if kind == "tr_open":
+            current = []
+        elif kind == "tr_close":
+            if current is not None:
+                rows.append(current)
+                current = None
+        elif kind in ("th_open", "td_open"):
+            if current is not None:
+                current.append(tokens[i + 1] if i + 1 < len(tokens) else None)
+            i += 1  # skip the cell's inline token
+        i += 1
+    if rows:
+        ncols = max(len(r) for r in rows)
+        table = document.add_table(rows=len(rows), cols=ncols)
+        try:
+            table.style = "Light Grid Accent 1"
+        except Exception:
+            pass
+        for r, cells in enumerate(rows):
+            for c, inline in enumerate(cells):
+                if inline is not None:
+                    _emit_docx_inline(table.cell(r, c).paragraphs[0], inline)
+    return i
+
+
 def markdown_to_docx(markdown: str, out_path: Path | str, title: str = "") -> Path:
     """Render a Markdown report to a Word ``.docx`` file and return its path.
 
-    Handles headings, paragraphs, bold/italic, links (text + URL), ordered and
-    bullet lists, and code blocks. Tables are flattened out (rare in reports).
-    Raises ``RuntimeError`` with install instructions if python-docx is missing.
+    Handles headings (with inline formatting), paragraphs, bold/italic, links
+    (text + URL), ordered and bullet lists, code blocks, and tables (rendered as
+    Word tables). Raises ``RuntimeError`` with install instructions if
+    python-docx is missing.
     """
     try:
         import docx
@@ -289,8 +323,12 @@ def markdown_to_docx(markdown: str, out_path: Path | str, title: str = "") -> Pa
         kind = tok.type
         if kind == "heading_open":
             level = int(tok.tag[1]) if tok.tag[1:].isdigit() else 2
-            document.add_heading(tokens[idx + 1].content, level=min(level, 4))
+            heading = document.add_heading("", level=min(level, 4))
+            _emit_docx_inline(heading, tokens[idx + 1])  # render inline markup, not raw source
             idx += 3
+            continue
+        if kind == "table_open":
+            idx = _consume_docx_table(document, tokens, idx) + 1
             continue
         if kind == "paragraph_open":
             if list_stack:

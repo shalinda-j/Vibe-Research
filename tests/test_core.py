@@ -729,6 +729,15 @@ class TestOrchestrator(unittest.TestCase):
         ))
         self.assertNotIn("humanize", [d.get("stage") for k, d in ev2 if k == "stage"])
 
+    def test_append_sources_respects_existing_references_heading(self):
+        from vibe_research import pipeline
+
+        findings = [Finding.build("q", "a", ["https://cdc.gov/x"])]
+        report = "Body text.\n\n## References\n1. https://cdc.gov/x"
+        out = pipeline._append_sources(report, findings, "ranked")
+        self.assertNotIn("## Sources", out)   # don't append a duplicate list
+        self.assertEqual(out, report)
+
     def test_disagreements_section_surfaced(self):
         report = asyncio.run(run_pipeline(
             ContradictionBackend(), "T", planner_model="p", worker_model="w",
@@ -849,6 +858,13 @@ class TestEnrich(unittest.TestCase):
         self.assertEqual(tier("https://reddit.com/r/x"), "low")
         self.assertEqual(tier("https://randomsite.net/x"), "medium")
 
+    def test_score_source_matches_host_not_path(self):
+        # An authoritative domain in the PATH/QUERY must not elevate a junk host.
+        self.assertEqual(enrich.score_source("http://evil.example/r?to=https://cdc.gov")["tier"], "medium")
+        self.assertEqual(enrich.score_source("http://myblog.example/nature.com-is-great")["tier"], "medium")
+        # A genuinely authoritative host is still scored high.
+        self.assertEqual(enrich.score_source("https://pubmed.ncbi.nlm.nih.gov/123")["tier"], "high")
+
     def test_rank_sources_orders_by_credibility(self):
         ranked = enrich.rank_sources(
             ["https://reddit.com/x", "https://cdc.gov/y", "https://bbc.com/z"]
@@ -937,6 +953,23 @@ class TestExport(unittest.TestCase):
             path = exportmod.markdown_to_docx(md, out, title="T")
             self.assertTrue(path.exists())
             self.assertGreater(path.stat().st_size, 0)
+
+    @unittest.skipUnless(exportmod.docx_available(), "python-docx not installed")
+    def test_markdown_to_docx_renders_table_and_heading_markup(self):
+        import docx
+
+        with tempfile.TemporaryDirectory() as d:
+            out = pathlib.Path(d) / "t.docx"
+            md = "## **Key** findings\n\n| Model | Cost |\n| --- | --- |\n| Opus | High |\n"
+            exportmod.markdown_to_docx(md, out, title="T")
+            doc = docx.Document(str(out))
+            headings = [p.text for p in doc.paragraphs if p.style.name.startswith("Heading")]
+            self.assertIn("Key findings", headings)          # inline markup rendered
+            self.assertNotIn("**Key** findings", headings)   # not raw source
+            self.assertGreaterEqual(len(doc.tables), 1)      # table preserved
+            cells = [c.text for t in doc.tables for row in t.rows for c in row.cells]
+            self.assertIn("Opus", cells)
+            self.assertIn("Cost", cells)
 
     @unittest.skipUnless(exportmod.pdf_available(), "fpdf2 not installed")
     def test_markdown_to_pdf_writes_valid_file(self):

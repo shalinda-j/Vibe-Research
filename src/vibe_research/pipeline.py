@@ -178,7 +178,11 @@ def _append_sources(report: str, findings: list[Finding], citations: str = "rank
     if not all_sources:
         return report
     low = report.lower()
-    if "## sources" in low or "## all sources" in low:
+    # Don't append a second list if the write-up already produced one under any
+    # of the common reference headings.
+    if any(h in low for h in (
+        "## sources", "## all sources", "## references", "## bibliography", "## works cited",
+    )):
         return report
     if citations == "plain":
         return report + "\n\n## All sources\n" + "\n".join(f"- {s}" for s in all_sources)

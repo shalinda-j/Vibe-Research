@@ -25,6 +25,14 @@ All notable changes to **vibe-research** are documented here. The format follows
 - Rough **cost estimate** and a **credibility tally** printed after headless runs.
 - **CI** (GitHub Actions, Python 3.10–3.13) and a **PyPI publish** workflow.
 
+### Fixed
+- Credibility scoring now matches the URL **host only** — a junk link that embeds
+  an authoritative domain in its path/query is no longer falsely elevated.
+- The ranked Sources section is suppressed if the write-up already produced a
+  references list under any common heading (References/Bibliography/Works cited).
+- DOCX export now renders **tables** (previously dropped) and headings with inline
+  formatting (previously emitted raw Markdown).
+
 ## [0.3.0]
 
 ### Added

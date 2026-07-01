@@ -57,10 +57,12 @@ def _is_primary(host: str) -> bool:
 def score_source(url: str) -> dict:
     """Classify one source URL into a credibility tier with a 0-1 score + label."""
     host = domain_of(url)
-    low = url.lower()
 
     def has(table) -> bool:
-        return any(s in host or s in low for s in table)
+        # Match the HOST only — never the path/query, or a junk URL that merely
+        # embeds an authoritative domain (a redirect target, a share/tracking
+        # param) would be falsely elevated.
+        return any(s in host for s in table)
 
     if _is_primary(host) or has(_ACADEMIC):
         tier, score, label = "high", 0.95, "primary / authoritative"
