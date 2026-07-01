@@ -56,10 +56,25 @@ class Config:
     enable_memory: bool = True               # learn from / persist past runs
     humanize: bool = True                    # final pass: rewrite in a natural human voice
     memory_dir: str = ""                     # empty -> default_memory_dir()
+
+    # --- per-stage model overrides (empty -> use planner_model) --------------
+    verifier_model: str = ""                 # fact-check model
+    writer_model: str = ""                   # synthesis model
+    humanizer_model: str = ""                # human-voice rewrite model
+
+    # --- sourcing controls ---------------------------------------------------
+    citations: str = "ranked"                # ranked (credibility) | plain
+    since_year: int = 0                      # prefer sources >= this year (0 = off)
+    only_domains: str = ""                   # comma-sep domain substrings to keep
+    block_domains: str = ""                  # comma-sep domain substrings to drop
+
+    # --- output --------------------------------------------------------------
     export_pdf: bool = False                  # also write a PDF beside each report
     export_html: bool = False                 # also write an HTML page beside each report
     export_json: bool = False                 # also write a structured JSON sidecar
+    export_docx: bool = False                 # also write a Word .docx beside each report
     open_after: bool = False                  # open the report when a run finishes
+    debug: bool = False                       # write a JSONL trace of every model call
 
     # --- reliability knobs ---------------------------------------------------
     max_retries: int = 3                     # backoff retries per model call (0 = none)
@@ -107,13 +122,14 @@ def save_config(cfg: Config) -> Path:
 
 
 _INT_FIELDS = {"max_parallel", "subquestions", "max_iterations", "verifier_votes", "max_concurrency"}
-_NONNEG_INT_FIELDS = {"max_retries", "call_timeout"}   # 0 is meaningful (off)
+_NONNEG_INT_FIELDS = {"max_retries", "call_timeout", "since_year"}   # 0 is meaningful (off)
 _FLOAT_FIELDS = {"quality_threshold"}
 _BOOL_FIELDS = {
     "enable_debate", "enable_memory", "humanize",
-    "export_pdf", "export_html", "export_json", "open_after",
+    "export_pdf", "export_html", "export_json", "export_docx", "open_after", "debug",
 }
 _ALLOWED_MODES = {"auto", "api", "subscription"}
+_ALLOWED_CITATIONS = {"ranked", "plain"}
 _TRUE = {"1", "true", "yes", "on", "y"}
 _FALSE = {"0", "false", "no", "off", "n"}
 
@@ -150,6 +166,10 @@ def apply_setting(cfg: Config, key: str, value: str) -> None:
         setattr(cfg, key, _parse_bool(value))
     elif key == "mode":
         if value not in _ALLOWED_MODES:
+            raise ValueError(value)
+        setattr(cfg, key, value)
+    elif key == "citations":
+        if value not in _ALLOWED_CITATIONS:
             raise ValueError(value)
         setattr(cfg, key, value)
     else:

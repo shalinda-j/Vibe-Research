@@ -40,6 +40,13 @@ from .agents import (
     VerifierAgent,
 )
 from .backends import Backend
+from .enrich import (
+    credibility_summary,
+    disagreements_section,
+    filter_sources,
+    rank_sources,
+    sources_section,
+)
 from .schemas import (
     Critique,
     Finding,
@@ -65,6 +72,17 @@ def run_kwargs_from_config(cfg) -> dict:
     from .memory import Memory
 
     memory = Memory(cfg.resolved_memory_dir()) if cfg.enable_memory else None
+
+    only = [d.strip() for d in (cfg.only_domains or "").split(",") if d.strip()]
+    block = [d.strip() for d in (cfg.block_domains or "").split(",") if d.strip()]
+    guide: list[str] = []
+    if cfg.since_year:
+        guide.append(f"Strongly prefer sources published in {cfg.since_year} or later.")
+    if only:
+        guide.append("Restrict to these domains where possible: " + ", ".join(only) + ".")
+    if block:
+        guide.append("Avoid these domains: " + ", ".join(block) + ".")
+
     return dict(
         planner_model=cfg.planner_model,
         worker_model=cfg.worker_model,
@@ -76,6 +94,13 @@ def run_kwargs_from_config(cfg) -> dict:
         enable_debate=cfg.enable_debate,
         enable_memory=cfg.enable_memory,
         humanize=cfg.humanize,
+        verifier_model=cfg.verifier_model or None,
+        writer_model=cfg.writer_model or None,
+        humanizer_model=cfg.humanizer_model or None,
+        research_guidance=" ".join(guide),
+        only_domains=only,
+        block_domains=block,
+        citations=cfg.citations,
         memory=memory,
     )
 
@@ -139,14 +164,34 @@ def _to_record(
     )
 
 
-def _append_sources(report: str, findings: list[Finding]) -> str:
-    all_sources: list[str] = []
+def _all_sources(findings: list[Finding]) -> list[str]:
+    seen: list[str] = []
     for finding in findings:
         for src in finding.sources:
-            if src not in all_sources:
-                all_sources.append(src)
-    if all_sources and "## all sources" not in report.lower():
-        report += "\n\n## All sources\n" + "\n".join(f"- {s}" for s in all_sources)
+            if src not in seen:
+                seen.append(src)
+    return seen
+
+
+def _append_sources(report: str, findings: list[Finding], citations: str = "ranked") -> str:
+    all_sources = _all_sources(findings)
+    if not all_sources:
+        return report
+    low = report.lower()
+    if "## sources" in low or "## all sources" in low:
+        return report
+    if citations == "plain":
+        return report + "\n\n## All sources\n" + "\n".join(f"- {s}" for s in all_sources)
+    return report + "\n\n" + sources_section(all_sources)
+
+
+def _append_disagreements(report: str, verifications: list[VerificationReport]) -> str:
+    contradictions: list[str] = []
+    for verification in verifications:
+        contradictions.extend(verification.contradictions)
+    section = disagreements_section(contradictions)
+    if section and "## disagreements" not in report.lower():
+        report += "\n\n" + section
     return report
 
 
@@ -167,6 +212,13 @@ async def run_pipeline(
     enable_debate: bool = True,
     enable_memory: bool = False,
     humanize: bool = True,
+    verifier_model: str | None = None,
+    writer_model: str | None = None,
+    humanizer_model: str | None = None,
+    research_guidance: str = "",
+    only_domains: list[str] | None = None,
+    block_domains: list[str] | None = None,
+    citations: str = "ranked",
     memory=None,
     on_event: EventCallback = _noop,
 ) -> str:
@@ -179,10 +231,10 @@ async def run_pipeline(
     on_event("start", {"topic": topic})
 
     planner = PlannerAgent(backend, planner_model)
-    researcher = ResearcherAgent(backend, worker_model)
-    verifier = VerifierAgent(backend, planner_model)
+    researcher = ResearcherAgent(backend, worker_model, guidance=research_guidance)
+    verifier = VerifierAgent(backend, verifier_model or planner_model)
     editor = EditorAgent(backend, planner_model)
-    writer = SynthesizerAgent(backend, planner_model)
+    writer = SynthesizerAgent(backend, writer_model or planner_model)
 
     sem = asyncio.Semaphore(max(1, max_parallel))
     findings: list[Finding] = []
@@ -191,6 +243,8 @@ async def run_pipeline(
     async def research_batch(questions: list[str]) -> None:
         async def one(question: str) -> Finding:
             finding = await researcher.research(question, sem)
+            if only_domains or block_domains:
+                finding.sources = filter_sources(finding.sources, only_domains, block_domains)
             on_event("finding", {"question": finding.question, "n_sources": len(finding.sources)})
             return finding
 
@@ -304,9 +358,11 @@ async def run_pipeline(
     # rewrite can't touch the canonical "All sources" list.
     if humanize:
         on_event("stage", {"stage": "humanize", "msg": "Humanizing the write-up"})
-        report = await HumanizerAgent(backend, planner_model).humanize(topic, report)
+        report = await HumanizerAgent(backend, humanizer_model or planner_model).humanize(topic, report)
 
-    report = _append_sources(report, findings)
+    # Surface where sources conflict, then a credibility-ranked reference list.
+    report = _append_disagreements(report, verifications)
+    report = _append_sources(report, findings, citations)
 
     # --- remember -------------------------------------------------------------
     if enable_memory and memory is not None:
@@ -335,10 +391,16 @@ def _build_result(topic, backend, findings, verifications, overall) -> dict:
         usage = backend.usage()
     except Exception:
         usage = {}
+    contradictions: list[str] = []
+    for v in verifications:
+        contradictions.extend(v.contradictions)
     return {
         "topic": topic,
         "mode": getattr(backend, "name", "?"),
         "overall_confidence": overall,
+        "credibility": credibility_summary(sources),
+        "sources_ranked": rank_sources(sources),
+        "disagreements": list(dict.fromkeys(c.strip() for c in contradictions if c.strip())),
         "subquestions": [f.question for f in findings],
         "findings": [
             {

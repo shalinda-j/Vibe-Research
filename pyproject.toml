@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vibe-research"
-version = "0.3.0"
+version = "0.4.0"
 description = "Autonomous, fully-cited multi-agent research crew for your terminal (TUI + CLI)."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -26,10 +26,14 @@ dependencies = [
 [project.optional-dependencies]
 subscription = ["claude-agent-sdk"]
 pdf = ["fpdf2>=2.7"]
+docx = ["python-docx>=1.1"]
+all = ["fpdf2>=2.7", "python-docx>=1.1"]
 dev = ["pytest>=7"]
 
 [project.urls]
-Homepage = "https://github.com/yourname/vibe-research"
+Homepage = "https://github.com/shalinda-j/Vibe-Research"
+Repository = "https://github.com/shalinda-j/Vibe-Research"
+Issues = "https://github.com/shalinda-j/Vibe-Research/issues"
 
 [project.scripts]
 vibe-research = "vibe_research.cli:main"

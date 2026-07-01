@@ -4,7 +4,7 @@ install:
 	pipx install . || pip install .
 
 dev:
-	pip install -e ".[dev,subscription]"
+	pip install -e ".[dev,subscription,pdf,docx]"
 
 test:
 	PYTHONPATH=src python -m unittest discover -s tests -v

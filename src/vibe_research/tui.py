@@ -236,6 +236,15 @@ class VibeResearchApp(App):
                 self._log(f"[green]✔ HTML: {_esc(str(hp))}[/green]")
             except Exception as exc:
                 self._log(f"[red]HTML export failed: {_esc(str(exc))}[/red]")
+        if self.cfg.export_docx:
+            try:
+                from .export import docx_path_for, markdown_to_docx
+
+                md = path.read_text(encoding="utf-8")
+                dp = markdown_to_docx(md, docx_path_for(path), title=topic)
+                self._log(f"[green]✔ DOCX: {_esc(str(dp))}[/green]")
+            except Exception as exc:
+                self._log(f"[red]DOCX export failed: {_esc(str(exc))}[/red]")
 
     def action_toggle_dark(self) -> None:
         # Works across Textual versions: newer uses a theme system, older uses `dark`.
@@ -361,6 +370,15 @@ class VibeResearchApp(App):
                 call_timeout=self.cfg.call_timeout,
                 max_concurrency=self.cfg.max_concurrency,
             )
+            if self.cfg.debug:
+                try:
+                    reports_dir = self.cfg.resolved_reports_dir()
+                    reports_dir.mkdir(parents=True, exist_ok=True)
+                    dbg = reports_dir / f"vibe-debug-{int(time.time())}.jsonl"
+                    backend.configure(debug_path=dbg)
+                    self._log(f"[dim]🐞 debug trace: {_esc(str(dbg))}[/dim]")
+                except Exception:
+                    pass
         except Exception as exc:
             self._log(f"[red]✗ {_esc(str(exc))}[/red]")
             self._report().update(

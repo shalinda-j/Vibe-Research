@@ -59,6 +59,18 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--retries", type=int, help="Backoff retries per model call (0 = none)")
     run.add_argument("--timeout", type=int, help="Per-call timeout in seconds (0 = none)")
     run.add_argument("--concurrency", type=int, help="Max simultaneous model calls")
+    run.add_argument("--depth", choices=["quick", "standard", "deep"],
+                     help="Preset for sub-questions/votes/iterations")
+    run.add_argument("--citations", choices=["ranked", "plain"],
+                     help="Reference list style (ranked by credibility, or plain)")
+    run.add_argument("--since", type=int, metavar="YEAR", help="Prefer sources from this year onward")
+    run.add_argument("--only-domains", help="Comma-sep domain substrings to keep (e.g. gov,edu)")
+    run.add_argument("--block-domains", help="Comma-sep domain substrings to drop (e.g. reddit.com)")
+    run.add_argument("--verifier-model", help="Model for fact-checking (default: planner model)")
+    run.add_argument("--writer-model", help="Model for the write-up (default: planner model)")
+    run.add_argument("--humanizer-model", help="Model for the human-voice rewrite (default: planner model)")
+    run.add_argument("--docx", action="store_true", help="Also export the report as a Word .docx")
+    run.add_argument("--debug", action="store_true", help="Write a JSONL trace of every model call")
 
     sub.add_parser("doctor", help="Check environment, dependencies, and auth")
 
@@ -76,7 +88,20 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_DEPTH_PRESETS = {
+    "quick":    {"subquestions": 3, "verifier_votes": 1, "max_iterations": 1},
+    "standard": {"subquestions": 5, "verifier_votes": 2, "max_iterations": 2},
+    "deep":     {"subquestions": 8, "verifier_votes": 3, "max_iterations": 3},
+}
+
+
 def _cfg_from_args(cfg: Config, args: argparse.Namespace) -> Config:
+    # Depth preset first, so explicit --subquestions/--votes/--iterations win.
+    depth = getattr(args, "depth", None)
+    if depth in _DEPTH_PRESETS:
+        for key, value in _DEPTH_PRESETS[depth].items():
+            setattr(cfg, key, value)
+
     if getattr(args, "mode", None):
         cfg.mode = args.mode
     if getattr(args, "parallel", None) is not None:
@@ -115,6 +140,24 @@ def _cfg_from_args(cfg: Config, args: argparse.Namespace) -> Config:
         cfg.call_timeout = args.timeout
     if getattr(args, "concurrency", None) is not None:
         cfg.max_concurrency = args.concurrency
+    if getattr(args, "citations", None):
+        cfg.citations = args.citations
+    if getattr(args, "since", None) is not None:
+        cfg.since_year = args.since
+    if getattr(args, "only_domains", None):
+        cfg.only_domains = args.only_domains
+    if getattr(args, "block_domains", None):
+        cfg.block_domains = args.block_domains
+    if getattr(args, "verifier_model", None):
+        cfg.verifier_model = args.verifier_model
+    if getattr(args, "writer_model", None):
+        cfg.writer_model = args.writer_model
+    if getattr(args, "humanizer_model", None):
+        cfg.humanizer_model = args.humanizer_model
+    if getattr(args, "docx", False):
+        cfg.export_docx = True
+    if getattr(args, "debug", False):
+        cfg.debug = True
     return cfg
 
 
@@ -145,12 +188,15 @@ def cmd_doctor() -> int:
     print(f"  fact-check      {'debate, ' + str(cfg.verifier_votes) + ' votes' if cfg.enable_debate else 'single verifier'} per finding")
     print(f"  humanize        {'ON — natural human-voice rewrite' if cfg.humanize else 'off'}")
     print(f"  memory          {'ON — ' + str(cfg.resolved_memory_dir()) if cfg.enable_memory else 'off'}")
+    print(f"  citations       {cfg.citations} references"
+          + (f" · since {cfg.since_year}" if cfg.since_year else ""))
     print(f"  reliability     retry x{cfg.max_retries} · timeout {cfg.call_timeout}s · "
           f"max {cfg.max_concurrency} concurrent")
 
-    from .export import pdf_available
-    pdf_ok = pdf_available()
+    from .export import docx_available, pdf_available
+    pdf_ok, docx_ok = pdf_available(), docx_available()
     print(f"  pdf export      [{mark(pdf_ok)}] {'ready (run/TUI: --pdf, Ctrl+P)' if pdf_ok else 'needs: pip install fpdf2'}")
+    print(f"  docx export     [{mark(docx_ok)}] {'ready (run: --docx)' if docx_ok else 'needs: pip install python-docx'}")
     print(f"  html/json       [OK ] always available (run: --html, --json)")
     print()
     print("Setup tips:")
@@ -244,6 +290,17 @@ def _open_file(path: Path) -> None:
         print(f"⚠ Could not open {path}: {exc}")
 
 
+def _cost_estimate(usage: dict) -> str:
+    """A rough $ estimate from token counts (API mode only). Clearly approximate:
+    the real cost depends on which model ran each stage."""
+    it = int(usage.get("input_tokens", 0) or 0)
+    ot = int(usage.get("output_tokens", 0) or 0)
+    if not (it or ot):
+        return ""  # subscription mode / no per-token data
+    cost = it / 1_000_000 * 5.0 + ot / 1_000_000 * 15.0  # blended Opus-class rate
+    return f"est. cost ~${cost:.2f}  ({it:,} in + {ot:,} out tokens, rough)"
+
+
 def _run_headless(cfg: Config, topic: str, *, quiet: bool = False, verbose: bool = False) -> int:
     from .backends import get_backend
     from .pipeline import run_kwargs_from_config, run_pipeline
@@ -262,6 +319,15 @@ def _run_headless(cfg: Config, topic: str, *, quiet: bool = False, verbose: bool
             call_timeout=cfg.call_timeout,
             max_concurrency=cfg.max_concurrency,
         )
+        if cfg.debug:
+            from datetime import datetime
+
+            reports_dir = cfg.resolved_reports_dir()
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            dbg = reports_dir / f"vibe-debug-{datetime.now():%Y%m%d-%H%M%S}.jsonl"
+            backend.configure(debug_path=dbg)
+            if not quiet:
+                print(f"🐞 debug trace: {dbg}")
 
         def on_event(kind: str, data: dict) -> None:
             if kind == "done":
@@ -328,14 +394,25 @@ def _run_headless(cfg: Config, topic: str, *, quiet: bool = False, verbose: bool
                 outputs.append(("HTML", markdown_to_html_file(saved_md, html_path_for(path), title=topic)))
             except Exception as exc:
                 print(f"⚠ HTML export skipped: {exc}")
+        if cfg.export_docx:
+            from .export import docx_path_for, markdown_to_docx
+            try:
+                outputs.append(("DOCX", markdown_to_docx(saved_md, docx_path_for(path), title=topic)))
+            except Exception as exc:
+                print(f"⚠ DOCX export skipped: {exc}")
 
         for label, out in outputs:
             print(f"✔ {label}: {out}")
         if not quiet:
+            if result and result.get("credibility"):
+                print(f"  sources: {result['credibility']}")
             try:
                 print(f"  ({backend.usage_line()})")
             except Exception:
                 pass
+            cost = _cost_estimate(result.get("usage", {})) if result else ""
+            if cost:
+                print(f"  {cost}")
         if cfg.open_after:
             by_label = dict(outputs)
             _open_file(by_label.get("PDF") or by_label.get("HTML") or by_label["Report"])

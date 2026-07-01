@@ -20,6 +20,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
 from vibe_research.backends import Backend, choose_mode, extract_urls  # noqa: E402
 from vibe_research import config as cfgmod  # noqa: E402
+from vibe_research import enrich  # noqa: E402
 from vibe_research import export as exportmod  # noqa: E402
 from vibe_research import reports as reportsmod  # noqa: E402
 from vibe_research import schemas  # noqa: E402
@@ -199,6 +200,31 @@ class HangBackend(Backend):
     async def _complete_once(self, prompt, model, use_search=False):
         await asyncio.sleep(5)
         return "never", []
+
+
+class ContradictionBackend(FakeBackend):
+    """Fact-checker reports a contradiction — to test the Disagreements section."""
+
+    async def complete(self, prompt, model, use_search=False):
+        if "skeptical fact-checker" in prompt:
+            return (
+                '{"verdicts":[{"claim":"X","status":"contradicted","confidence":0.4}],'
+                '"gaps":[],"contradictions":["Source A says X; Source B says not-X"],'
+                '"overall_confidence":0.5}'
+            ), []
+        return await super().complete(prompt, model, use_search)
+
+
+class BlockedSourceBackend(FakeBackend):
+    """Researcher cites a blocked + a kept domain — to test source filtering."""
+
+    async def complete(self, prompt, model, use_search=False):
+        if use_search:
+            return (
+                "Answer citing https://reddit.com/r/x and https://cdc.gov/y.\nCONFIDENCE: 0.8",
+                ["https://reddit.com/r/x", "https://cdc.gov/y"],
+            )
+        return await super().complete(prompt, model, use_search)
 
 
 class ThrottleBackend(Backend):
@@ -398,6 +424,19 @@ class TestConfig(unittest.TestCase):
         cfgmod.apply_setting(cfg, "max_concurrency", "3")
         self.assertEqual(cfg.max_concurrency, 3)
 
+        # v0.4 sourcing / output knobs
+        cfgmod.apply_setting(cfg, "citations", "plain")
+        self.assertEqual(cfg.citations, "plain")
+        cfgmod.apply_setting(cfg, "since_year", "0")            # 0 allowed (off)
+        cfgmod.apply_setting(cfg, "since_year", "2020")
+        self.assertEqual(cfg.since_year, 2020)
+        cfgmod.apply_setting(cfg, "export_docx", "yes")
+        self.assertTrue(cfg.export_docx)
+        cfgmod.apply_setting(cfg, "verifier_model", "some-model")
+        self.assertEqual(cfg.verifier_model, "some-model")
+
+        with self.assertRaises(ValueError):
+            cfgmod.apply_setting(cfg, "citations", "fancy")     # invalid choice
         with self.assertRaises(ValueError):
             cfgmod.apply_setting(cfg, "max_concurrency", "0")   # must be >= 1
         with self.assertRaises(ValueError):
@@ -609,7 +648,7 @@ class TestOrchestrator(unittest.TestCase):
         )
 
         self.assertIn("Confidence & Gaps", report)
-        self.assertIn("## All sources", report)
+        self.assertIn("## Sources", report)  # credibility-ranked references
         self.assertIn("https://example.com/x", report)
 
         kinds = [k for k, _ in events]
@@ -690,6 +729,35 @@ class TestOrchestrator(unittest.TestCase):
         ))
         self.assertNotIn("humanize", [d.get("stage") for k, d in ev2 if k == "stage"])
 
+    def test_disagreements_section_surfaced(self):
+        report = asyncio.run(run_pipeline(
+            ContradictionBackend(), "T", planner_model="p", worker_model="w",
+            subquestions=3, max_parallel=2,
+        ))
+        self.assertIn("## Disagreements", report)
+
+    def test_per_stage_model_override(self):
+        backend = FakeBackend()
+        asyncio.run(run_pipeline(
+            backend, "T", planner_model="planner", worker_model="worker",
+            subquestions=3, max_parallel=2,
+            verifier_model="verif-x", writer_model="writer-x",
+        ))
+        models = {m for m, _ in backend.calls}
+        self.assertIn("verif-x", models)
+        self.assertIn("writer-x", models)
+
+    def test_domain_block_filter_applied(self):
+        events = []
+        asyncio.run(run_pipeline(
+            BlockedSourceBackend(), "T", planner_model="p", worker_model="w",
+            subquestions=3, max_parallel=2, block_domains=["reddit.com"],
+            on_event=lambda k, d: events.append((k, d)),
+        ))
+        result = [d["result"] for k, d in events if k == "done"][0]
+        self.assertNotIn("https://reddit.com/r/x", result["sources"])
+        self.assertIn("https://cdc.gov/y", result["sources"])
+
     def test_run_survives_transient_backend_failures(self):
         # A raising researcher OR a raising verifier must degrade, not crash.
         for backend in (FailResearchBackend(), FailVerifyBackend()):
@@ -755,6 +823,95 @@ class TestReliability(unittest.TestCase):
         self.assertIn("calls", b.usage_line())
         self.assertIn("retries", b.usage_line())
 
+    def test_debug_trace_written(self):
+        import json as _json
+
+        b = FlakyBackend(fail_times=0)
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d) / "trace.jsonl"
+            b.configure(debug_path=p)
+            asyncio.run(b.complete("hello prompt", "m"))
+            lines = p.read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(len(lines), 1)
+            rec = _json.loads(lines[0])
+            self.assertEqual(rec["model"], "m")
+            self.assertIn("prompt_head", rec)
+
+
+class TestEnrich(unittest.TestCase):
+    def test_score_source_tiers(self):
+        tier = lambda u: enrich.score_source(u)["tier"]
+        self.assertEqual(tier("https://cdc.gov/x"), "high")
+        self.assertEqual(tier("https://mit.edu/y"), "high")
+        self.assertEqual(tier("https://nature.com/a"), "high")
+        self.assertEqual(tier("https://bbc.com/n"), "medium-high")
+        self.assertEqual(tier("https://redcross.org/z"), "medium")
+        self.assertEqual(tier("https://reddit.com/r/x"), "low")
+        self.assertEqual(tier("https://randomsite.net/x"), "medium")
+
+    def test_rank_sources_orders_by_credibility(self):
+        ranked = enrich.rank_sources(
+            ["https://reddit.com/x", "https://cdc.gov/y", "https://bbc.com/z"]
+        )
+        self.assertEqual(enrich.domain_of(ranked[0]["url"]), "cdc.gov")
+        self.assertEqual(enrich.domain_of(ranked[-1]["url"]), "reddit.com")
+
+    def test_sources_section(self):
+        section = enrich.sources_section(["https://cdc.gov/a"])
+        self.assertIn("## Sources", section)
+        self.assertIn("1. https://cdc.gov/a", section)
+        self.assertIn("primary", section)
+        self.assertEqual(enrich.sources_section([]), "")
+
+    def test_filter_sources(self):
+        urls = ["https://a.gov/x", "https://reddit.com/y", "https://b.edu/z"]
+        self.assertEqual(
+            enrich.filter_sources(urls, only=["gov", "edu"]),
+            ["https://a.gov/x", "https://b.edu/z"],
+        )
+        self.assertEqual(
+            enrich.filter_sources(urls, block=["reddit.com"]),
+            ["https://a.gov/x", "https://b.edu/z"],
+        )
+
+    def test_disagreements_section(self):
+        self.assertEqual(enrich.disagreements_section([]), "")
+        section = enrich.disagreements_section(["A vs B", "A vs B", "C conflict"])
+        self.assertIn("## Disagreements", section)
+        self.assertEqual(section.count("\n- "), 2)  # deduped to two bullets
+
+    def test_credibility_summary(self):
+        summary = enrich.credibility_summary(["https://cdc.gov", "https://reddit.com/x"])
+        self.assertIn("high", summary)
+        self.assertIn("low", summary)
+
+
+class TestCLI(unittest.TestCase):
+    def _cfg_from(self, **kwargs):
+        import argparse
+
+        from vibe_research import cli
+
+        cfg = cfgmod.default_config()
+        cli._cfg_from_args(cfg, argparse.Namespace(**kwargs))
+        return cfg
+
+    def test_depth_preset(self):
+        cfg = self._cfg_from(depth="deep")
+        self.assertEqual((cfg.subquestions, cfg.verifier_votes, cfg.max_iterations), (8, 3, 3))
+
+    def test_depth_preset_explicit_override_wins(self):
+        cfg = self._cfg_from(depth="quick", subquestions=6)
+        self.assertEqual(cfg.subquestions, 6)       # explicit beats preset
+        self.assertEqual(cfg.verifier_votes, 1)     # rest still from 'quick'
+
+    def test_cost_estimate(self):
+        from vibe_research import cli
+
+        self.assertEqual(cli._cost_estimate({}), "")
+        line = cli._cost_estimate({"input_tokens": 1_000_000, "output_tokens": 1_000_000})
+        self.assertIn("$", line)
+
 
 class TestExport(unittest.TestCase):
     def test_markdown_to_html(self):
@@ -768,6 +925,18 @@ class TestExport(unittest.TestCase):
 
     def test_html_path_for(self):
         self.assertEqual(exportmod.html_path_for("a/b.md").suffix, ".html")
+
+    def test_docx_path_for(self):
+        self.assertEqual(exportmod.docx_path_for("a/b.md").suffix, ".docx")
+
+    @unittest.skipUnless(exportmod.docx_available(), "python-docx not installed")
+    def test_markdown_to_docx_writes_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = pathlib.Path(d) / "r.docx"
+            md = "# T\n\nA **bold** and *em* point with [link](https://e.com).\n\n- one\n- two"
+            path = exportmod.markdown_to_docx(md, out, title="T")
+            self.assertTrue(path.exists())
+            self.assertGreater(path.stat().st_size, 0)
 
     @unittest.skipUnless(exportmod.pdf_available(), "fpdf2 not installed")
     def test_markdown_to_pdf_writes_valid_file(self):

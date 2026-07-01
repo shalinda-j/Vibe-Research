@@ -1,5 +1,9 @@
 # vibe-research
 
+[![CI](https://github.com/shalinda-j/Vibe-Research/actions/workflows/ci.yml/badge.svg)](https://github.com/shalinda-j/Vibe-Research/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 An autonomous, fully-cited **multi-agent research crew** that lives in your terminal.
 Give it a topic; a planner splits it into sub-questions, parallel researchers answer
 each with live web search, a panel of adversarial fact-checkers votes on every claim,
@@ -119,11 +123,22 @@ vibe-research run "topic" --no-debate      # single fact-check instead of a vote
 vibe-research run "topic" --no-memory      # don't recall or persist memory
 vibe-research run "topic" --no-humanize    # skip the human-voice rewrite (raw draft)
 
+# sourcing & depth
+vibe-research run "topic" --depth deep          # quick | standard | deep preset
+vibe-research run "topic" --since 2022          # prefer recent sources
+vibe-research run "topic" --only-domains gov,edu     # restrict to trusted domains
+vibe-research run "topic" --block-domains reddit.com # drop specific domains
+vibe-research run "topic" --citations plain     # plain source list (default: ranked)
+
+# per-stage models
+vibe-research run "topic" --writer-model claude-opus-4-8 --verifier-model claude-sonnet-4-6
+
 # output & UX
-vibe-research run "topic" --pdf --html --json   # also export PDF, HTML and a JSON sidecar
+vibe-research run "topic" --pdf --html --json --docx   # PDF, HTML, JSON sidecar, Word doc
 vibe-research run "topic" --open                # open the report when it's done
 vibe-research run "topic" --no-tui --quiet      # print only the saved path(s)
 vibe-research run "topic" --no-tui --verbose    # print fact-check + editor detail
+vibe-research run "topic" --debug               # write a JSONL trace of every model call
 
 # reliability (retries/timeout/throttle per model call)
 vibe-research run "topic" --retries 5 --timeout 240 --concurrency 6
@@ -159,9 +174,16 @@ Stored at `~/.config/vibe-research/config.json`:
 | `enable_debate` | `true` | multi-verifier voting vs. a single fact-check |
 | `enable_memory` | `true` | recall from / persist to long-term memory |
 | `humanize` | `true` | final pass: rewrite the report in a natural human voice |
+| `citations` | `ranked` | `ranked` (by source credibility) or `plain` list |
+| `since_year` | `0` | prefer sources from this year onward (`0` = off) |
+| `only_domains` | `""` | comma-sep domain substrings to keep (e.g. `gov,edu`) |
+| `block_domains` | `""` | comma-sep domain substrings to drop (e.g. `reddit.com`) |
+| `verifier_model` / `writer_model` / `humanizer_model` | `""` | per-stage model overrides (empty → planner model) |
 | `export_pdf` | `false` | also write a PDF beside every saved report |
 | `export_html` | `false` | also write a styled HTML page beside every report |
 | `export_json` | `false` | also write a structured JSON sidecar (findings + verdicts) |
+| `export_docx` | `false` | also write a Word `.docx` (needs the `[docx]` extra) |
+| `debug` | `false` | write a JSONL trace of every model call |
 | `open_after` | `false` | open the report when a run finishes |
 | `max_retries` | `3` | exponential-backoff retries per model call (`0` = none) |
 | `call_timeout` | `180` | per-call timeout in seconds (`0` = none) |
@@ -214,6 +236,8 @@ topic ─▶ PLANNER ─▶ RESEARCHERS (parallel, web search) ─▶ VERIFIERS 
    the crew researches them — looping until it's confident or runs out of rounds.
 5. **Synthesizer** — writes a cited report, dropping or flagging claims the
    fact-checkers rejected, and ends with an honest "Confidence & Gaps" section.
+   Conflicting evidence is surfaced in a **Disagreements** section, and sources
+   are listed **ranked by credibility** (primary/authoritative → news → blog).
 6. **Humanizer** — a final pass that rewrites the draft in a natural human voice
    (varied rhythm, no AI tells), changing *only* voice and flow. It never alters
    a fact and is guarded so it can't drop citations — if a rewrite loses too many
@@ -237,6 +261,22 @@ make doctor   # environment check
 
 The test-suite runs the full pipeline against a fake backend, so it validates the
 orchestration logic without any API calls or network access.
+
+---
+
+## Roadmap
+
+Bigger features that need live external services or are larger projects (open to
+contributions):
+
+- **Pluggable backends** — OpenAI / Gemini / local **Ollama**.
+- **Local document RAG** — research over your own PDFs/notes.
+- **MCP server mode** — expose vibe-research as a tool to other agents.
+- **Recursive / multi-hop research** — drill deeper into a single finding.
+- **Source archival** — snapshot cited pages against link rot.
+- **Streaming TUI**, **scheduled watch mode**, **Obsidian/Notion sync**.
+
+See `CHANGELOG.md` for what's already shipped.
 
 ---
 

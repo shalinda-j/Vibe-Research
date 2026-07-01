@@ -128,12 +128,22 @@ class PlannerAgent(Agent):
 
 
 class ResearcherAgent(Agent):
-    """Field researcher: answer one sub-question with live web search."""
+    """Field researcher: answer one sub-question with live web search.
+
+    An optional ``guidance`` string (recency / preferred-or-avoided domains) is
+    appended to every prompt so the caller can steer sourcing without changing
+    this agent's contract.
+    """
 
     role = "researcher"
 
+    def __init__(self, backend: Backend, model: str, guidance: str = "") -> None:
+        super().__init__(backend, model)
+        self.guidance = guidance
+
     async def research(self, question: str, sem: asyncio.Semaphore) -> Finding:
         async with sem:
+            guidance = f"\n\nSOURCING GUIDANCE: {self.guidance}" if self.guidance else ""
             try:
                 text, sources = await self.backend.complete(
                     "Research this question using web search. Give a thorough, factual "
@@ -141,7 +151,7 @@ class ResearcherAgent(Agent):
                     "used. Prefer primary and authoritative sources. If sources conflict "
                     "or the evidence is thin, say so explicitly instead of guessing. End "
                     'your answer with a line "CONFIDENCE: 0.0-1.0" reflecting how well '
-                    f"sourced your answer is.\n\nQUESTION: {question}",
+                    f"sourced your answer is.\n\nQUESTION: {question}{guidance}",
                     model=self.model,
                     use_search=True,
                 )

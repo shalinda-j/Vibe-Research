@@ -76,6 +76,7 @@ class Backend(ABC):
         self.base_delay = _DEFAULT_BASE_DELAY
         self.call_timeout = _DEFAULT_CALL_TIMEOUT
         self._sem = asyncio.Semaphore(_DEFAULT_MAX_CONCURRENCY)
+        self._debug_path = None
         # usage counters
         self.calls = 0
         self.retries = 0
@@ -89,6 +90,7 @@ class Backend(ABC):
         max_retries: int | None = None,
         call_timeout: float | None = None,
         max_concurrency: int | None = None,
+        debug_path=None,
     ) -> None:
         """Apply reliability settings (typically from user config)."""
         if max_retries is not None:
@@ -97,6 +99,32 @@ class Backend(ABC):
             self.call_timeout = max(0.0, float(call_timeout))
         if max_concurrency is not None:
             self._sem = asyncio.Semaphore(max(1, int(max_concurrency)))
+        if debug_path is not None:
+            self._debug_path = str(debug_path)
+
+    def _trace(self, model: str, use_search: bool, prompt: str, text: str) -> None:
+        """Append one prompt/response record to the debug trace, if enabled.
+
+        Best-effort and bounded: never let logging break a run, and truncate so a
+        trace file can't balloon. Prompts/responses are stored head-only."""
+        if not self._debug_path:
+            return
+        import json
+
+        record = {
+            "call": self.calls,
+            "model": model,
+            "search": use_search,
+            "prompt_chars": len(prompt or ""),
+            "response_chars": len(text or ""),
+            "prompt_head": (prompt or "")[:500],
+            "response_head": (text or "")[:500],
+        }
+        try:
+            with open(self._debug_path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
 
     @abstractmethod
     async def _complete_once(
@@ -115,11 +143,14 @@ class Backend(ABC):
             try:
                 async with self._sem:
                     if self.call_timeout and self.call_timeout > 0:
-                        return await asyncio.wait_for(
+                        result = await asyncio.wait_for(
                             self._complete_once(prompt, model, use_search),
                             timeout=self.call_timeout,
                         )
-                    return await self._complete_once(prompt, model, use_search)
+                    else:
+                        result = await self._complete_once(prompt, model, use_search)
+                self._trace(model, use_search, prompt, result[0] if result else "")
+                return result
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - deliberately broad; decide via _is_retryable

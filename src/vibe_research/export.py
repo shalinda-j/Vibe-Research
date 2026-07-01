@@ -212,3 +212,110 @@ def markdown_to_html_file(markdown: str, out_path: Path | str, title: str = "") 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(markdown_to_html(markdown, title), encoding="utf-8")
     return out_path
+
+
+# --------------------------------------------------------------------- DOCX
+
+
+def docx_available() -> bool:
+    """True if the DOCX engine (python-docx) is importable."""
+    return importlib.util.find_spec("docx") is not None
+
+
+def docx_path_for(report_path: Path | str) -> Path:
+    """The sibling ``.docx`` path for a saved ``.md`` report."""
+    return Path(report_path).with_suffix(".docx")
+
+
+def _emit_docx_inline(paragraph, inline) -> None:
+    """Render one markdown-it inline token's children into a docx paragraph."""
+    bold = italic = False
+    href = None
+    for child in (inline.children or []):
+        kind = child.type
+        if kind == "strong_open":
+            bold = True
+        elif kind == "strong_close":
+            bold = False
+        elif kind == "em_open":
+            italic = True
+        elif kind == "em_close":
+            italic = False
+        elif kind == "link_open":
+            href = child.attrGet("href")
+        elif kind == "link_close":
+            if href:
+                run = paragraph.add_run(f" ({href})")
+                run.italic = True
+            href = None
+        elif kind in ("softbreak", "hardbreak"):
+            paragraph.add_run("\n")
+        elif kind == "code_inline":
+            run = paragraph.add_run(child.content)
+            run.font.name = "Consolas"
+        elif kind == "text":
+            run = paragraph.add_run(child.content)
+            run.bold = bold
+            run.italic = italic
+
+
+def markdown_to_docx(markdown: str, out_path: Path | str, title: str = "") -> Path:
+    """Render a Markdown report to a Word ``.docx`` file and return its path.
+
+    Handles headings, paragraphs, bold/italic, links (text + URL), ordered and
+    bullet lists, and code blocks. Tables are flattened out (rare in reports).
+    Raises ``RuntimeError`` with install instructions if python-docx is missing.
+    """
+    try:
+        import docx
+        from docx.shared import Pt
+    except ImportError as exc:  # pragma: no cover - exercised only without the extra
+        raise RuntimeError(
+            "DOCX export needs the 'python-docx' package.\n"
+            "    pip install python-docx\n"
+            '    (or: pip install "vibe-research[docx]")'
+        ) from exc
+    from markdown_it import MarkdownIt
+
+    document = docx.Document()
+    if title:
+        document.add_heading(title, level=0)
+
+    tokens = MarkdownIt("commonmark").enable("table").parse(markdown or "")
+    list_stack: list[str] = []
+    idx, n = 0, len(tokens)
+    while idx < n:
+        tok = tokens[idx]
+        kind = tok.type
+        if kind == "heading_open":
+            level = int(tok.tag[1]) if tok.tag[1:].isdigit() else 2
+            document.add_heading(tokens[idx + 1].content, level=min(level, 4))
+            idx += 3
+            continue
+        if kind == "paragraph_open":
+            if list_stack:
+                style = "List Bullet" if list_stack[-1] == "ul" else "List Number"
+                paragraph = document.add_paragraph(style=style)
+            else:
+                paragraph = document.add_paragraph()
+            _emit_docx_inline(paragraph, tokens[idx + 1])
+            idx += 3
+            continue
+        if kind == "bullet_list_open":
+            list_stack.append("ul")
+        elif kind == "ordered_list_open":
+            list_stack.append("ol")
+        elif kind in ("bullet_list_close", "ordered_list_close"):
+            if list_stack:
+                list_stack.pop()
+        elif kind in ("fence", "code_block"):
+            paragraph = document.add_paragraph()
+            run = paragraph.add_run(tok.content.rstrip("\n"))
+            run.font.name = "Consolas"
+            run.font.size = Pt(9)
+        idx += 1
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    document.save(str(out_path))
+    return out_path
