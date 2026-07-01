@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vibe-research"
-version = "0.5.0"
+version = "0.6.0"
 description = "Autonomous, fully-cited multi-agent research crew for your terminal (TUI + CLI)."
 readme = "README.md"
 requires-python = ">=3.10"

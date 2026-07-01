@@ -50,34 +50,74 @@ def extract_urls(text: str) -> list[str]:
     return out
 
 
-# Map the Claude-named config defaults to sensible OpenAI equivalents so a user
-# can switch to `--mode openai` without re-picking every model. Explicit OpenAI
-# model names (gpt-*, o1/o3/o4-*, etc.) are passed through untouched.
-_OPENAI_STRONG = "gpt-4o"
-_OPENAI_FAST = "gpt-4o-mini"
-_OPENAI_MODEL_MAP = (
-    ("claude-opus", _OPENAI_STRONG),
-    ("claude-sonnet", _OPENAI_FAST),
-    ("claude-haiku", _OPENAI_FAST),
-)
+# OpenAI-compatible providers. Gemini, GLM (Zhipu) and Kimi (Moonshot) all expose
+# an OpenAI-style chat-completions endpoint, so they run through the same `openai`
+# client with a different base_url — no extra dependency. Each entry gives the
+# endpoint, which env var(s) hold the key, sensible strong/fast default models
+# (so Claude-named config defaults auto-map on `--mode <provider>`), and whether a
+# simple inline web-search tool is available. All are pay-per-token API keys —
+# none offer a subscription-login API path.
+_PROVIDERS = {
+    "openai": {
+        "base_url": None,  # native OpenAI (Responses API), handled by OpenAIBackend
+        "key_env": ("OPENAI_API_KEY",),
+        "strong": "gpt-4o", "fast": "gpt-4o-mini", "search": "openai",
+    },
+    "gemini": {
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "key_env": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+        "strong": "gemini-2.5-pro", "fast": "gemini-2.5-flash", "search": None,
+    },
+    "glm": {
+        "base_url": "https://open.bigmodel.cn/api/paas/v4/",
+        "key_env": ("GLM_API_KEY", "ZHIPUAI_API_KEY"),
+        "strong": "glm-4.6", "fast": "glm-4-flash", "search": "glm",
+    },
+    "kimi": {
+        "base_url": "https://api.moonshot.cn/v1",
+        "key_env": ("KIMI_API_KEY", "MOONSHOT_API_KEY"),
+        "strong": "kimi-k2-0905-preview", "fast": "moonshot-v1-8k", "search": None,
+    },
+}
+
+# Providers that run on the shared OpenAI-compatible chat-completions backend.
+COMPATIBLE_PROVIDERS = ("gemini", "glm", "kimi")
+
+
+def _provider_key(provider: str) -> str | None:
+    for env in _PROVIDERS.get(provider, {}).get("key_env", ()):
+        val = os.environ.get(env)
+        if val:
+            return val
+    return None
+
+
+def _pick_model(model: str, provider: str, tier: str) -> str:
+    """A provider-appropriate model: keep an explicit non-Claude name, else the
+    provider's default for this tier (strong=planner, fast=worker)."""
+    prov = _PROVIDERS.get(provider)
+    if not prov:
+        return model
+    low = (model or "").lower()
+    if not model or low.startswith("claude"):
+        return prov[tier]
+    return model
 
 
 def map_openai_model(model: str) -> str:
     """Translate a Claude-style model name to an OpenAI one; pass others through."""
     low = (model or "").lower()
-    if not low.startswith("claude"):
-        return model or _OPENAI_STRONG
-    for prefix, target in _OPENAI_MODEL_MAP:
-        if low.startswith(prefix):
-            return target
-    return _OPENAI_STRONG
+    if not model or not low.startswith("claude"):
+        return model or _PROVIDERS["openai"]["strong"]
+    tier = "fast" if ("sonnet" in low or "haiku" in low) else "strong"
+    return _PROVIDERS["openai"][tier]
 
 
 def resolve_models(provider: str, planner: str, worker: str) -> tuple[str, str]:
     """Resolve the effective (planner, worker) models for the chosen provider."""
-    if provider == "openai":
-        return map_openai_model(planner), map_openai_model(worker)
-    return planner, worker
+    if provider not in _PROVIDERS:
+        return planner, worker
+    return _pick_model(planner, provider, "strong"), _pick_model(worker, provider, "fast")
 
 
 def estimate_cost(usage: dict) -> str:
@@ -408,6 +448,68 @@ class OpenAIBackend(Backend):
             pass
 
 
+class CompatibleBackend(Backend):
+    """Any OpenAI-compatible chat-completions endpoint (Gemini, GLM, Kimi).
+
+    Runs through the same ``openai`` client with the provider's ``base_url`` and
+    API key. All are pay-per-token — there is no subscription-login API path.
+    Live web search is only wired where the provider exposes a simple inline tool
+    (GLM); for the others the model answers from its own knowledge (the
+    fact-checker then scores sourcing accordingly).
+    """
+
+    def __init__(self, provider: str) -> None:
+        super().__init__()
+        prov = _PROVIDERS.get(provider)
+        if prov is None or provider not in COMPATIBLE_PROVIDERS:
+            raise RuntimeError(f"unknown provider: {provider}")
+        self.name = provider
+        self._prov = prov
+        try:
+            from openai import AsyncOpenAI
+        except ImportError as exc:
+            raise RuntimeError(
+                f"{provider} mode needs the 'openai' package (it speaks the OpenAI API).\n"
+                "    pip install openai\n"
+                '    (or: pip install "vibe-research[openai]")'
+            ) from exc
+        key = _provider_key(provider)
+        if not key:
+            envs = " or ".join(prov["key_env"])
+            raise RuntimeError(
+                f"{provider} mode needs an API key.\n"
+                f"    export {prov['key_env'][0]}=...   (checked: {envs})\n"
+                f"    ({provider} bills per token — there is no subscription API path.)"
+            )
+        self._client = AsyncOpenAI(api_key=key, base_url=prov["base_url"])
+
+    async def _complete_once(
+        self, prompt: str, model: str, use_search: bool = False
+    ) -> tuple[str, list[str]]:
+        model = _pick_model(model, self.name, "strong")
+        kwargs = {"model": model, "messages": [{"role": "user", "content": prompt}]}
+        if use_search and self._prov["search"] == "glm":
+            # Zhipu GLM's inline web-search tool.
+            kwargs["tools"] = [{"type": "web_search", "web_search": {"enable": True}}]
+        response = await self._client.chat.completions.create(**kwargs)
+
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            self.input_tokens += int(getattr(usage, "prompt_tokens", 0) or 0)
+            self.output_tokens += int(getattr(usage, "completion_tokens", 0) or 0)
+
+        text = ""
+        if getattr(response, "choices", None):
+            text = getattr(response.choices[0].message, "content", "") or ""
+        return text, extract_urls(text)
+
+    async def aclose(self) -> None:
+        try:
+            await self._client.close()
+        except Exception:
+            pass
+
+
 def detect_available() -> dict:
     """Report which backends' prerequisites are present. Never imports them."""
     return {
@@ -417,12 +519,15 @@ def detect_available() -> dict:
         "textual": importlib.util.find_spec("textual") is not None,
         "api_key_set": bool(os.environ.get("ANTHROPIC_API_KEY")),
         "openai_key_set": bool(os.environ.get("OPENAI_API_KEY")),
+        "gemini_key_set": _provider_key("gemini") is not None,
+        "glm_key_set": _provider_key("glm") is not None,
+        "kimi_key_set": _provider_key("kimi") is not None,
     }
 
 
 def choose_mode(mode: str) -> str:
     """Resolve 'auto' to a concrete backend name, or validate an explicit choice."""
-    if mode in ("api", "subscription", "openai"):
+    if mode in ("api", "subscription", "openai") or mode in COMPATIBLE_PROVIDERS:
         return mode
     avail = detect_available()
     if avail["api_key_set"]:
@@ -447,6 +552,8 @@ def get_backend(mode: str = "auto") -> Backend:
     chosen = choose_mode(mode)
     if chosen == "openai":
         return OpenAIBackend()
+    if chosen in COMPATIBLE_PROVIDERS:
+        return CompatibleBackend(chosen)
     if chosen == "api":
         return APIBackend()
     return SubscriptionBackend()

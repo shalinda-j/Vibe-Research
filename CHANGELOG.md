@@ -4,6 +4,27 @@ All notable changes to **vibe-research** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project uses
 [semantic versioning](https://semver.org/).
 
+## [0.6.0]
+
+### Added
+- **More engines** — `--mode gemini | glm | kimi` run the pipeline on Google
+  Gemini, Zhipu GLM, or Moonshot Kimi. All speak the OpenAI API, so they reuse the
+  `[openai]` extra with their own key (`GEMINI_API_KEY` / `GLM_API_KEY` /
+  `KIMI_API_KEY`) and auto-map Claude-named model defaults. (All pay-per-token; no
+  subscription API path. Built-in web search for GLM; the others use model knowledge.)
+
+### Fixed
+- **PDF export no longer aborts** when the report references a remote image or a
+  missing local one — such refs degrade to their caption instead of killing the
+  whole PDF (matching the DOCX behaviour).
+- **HTML export is XSS-safe** — raw HTML in LLM/web-derived report text and
+  ```mermaid` blocks is escaped, so a scraped `<script>` can't execute when the
+  report is opened locally.
+- **Chart table fallback is loss-less** — every data point is kept even when the
+  model supplies fewer labels than values.
+- **TUI "Export all"** guards each format independently, so one failing export no
+  longer skips the others.
+
 ## [0.5.0]
 
 ### Added

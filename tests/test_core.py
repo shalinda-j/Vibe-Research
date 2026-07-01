@@ -438,6 +438,8 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.verifier_model, "some-model")
         cfgmod.apply_setting(cfg, "mode", "openai")
         self.assertEqual(cfg.mode, "openai")
+        cfgmod.apply_setting(cfg, "mode", "gemini")
+        self.assertEqual(cfg.mode, "gemini")
 
         # v0.5 writing/visuals knobs
         cfgmod.apply_setting(cfg, "words", "1500")
@@ -541,6 +543,53 @@ class TestOpenAI(unittest.TestCase):
         finally:
             if old is not None:
                 os.environ["OPENAI_API_KEY"] = old
+
+
+class TestCompatibleProviders(unittest.TestCase):
+    def test_resolve_models_per_provider(self):
+        from vibe_research.backends import resolve_models
+
+        self.assertEqual(
+            resolve_models("gemini", "claude-opus-4-8", "claude-sonnet-4-6"),
+            ("gemini-2.5-pro", "gemini-2.5-flash"),
+        )
+        self.assertEqual(
+            resolve_models("glm", "claude-opus-4-8", "claude-sonnet-4-6"),
+            ("glm-4.6", "glm-4-flash"),
+        )
+        self.assertEqual(
+            resolve_models("kimi", "claude-opus-4-8", "claude-sonnet-4-6"),
+            ("kimi-k2-0905-preview", "moonshot-v1-8k"),
+        )
+        # explicit non-Claude model names pass through
+        self.assertEqual(
+            resolve_models("gemini", "gemini-1.5-pro", "gemini-1.5-flash"),
+            ("gemini-1.5-pro", "gemini-1.5-flash"),
+        )
+
+    def test_choose_mode_compatible(self):
+        for m in ("gemini", "glm", "kimi"):
+            self.assertEqual(choose_mode(m), m)
+
+    def test_detect_available_provider_keys(self):
+        from vibe_research.backends import detect_available
+
+        avail = detect_available()
+        for key in ("gemini_key_set", "glm_key_set", "kimi_key_set"):
+            self.assertIn(key, avail)
+
+    @unittest.skipUnless(importlib.util.find_spec("openai"), "openai not installed")
+    def test_compatible_backend_requires_key(self):
+        from vibe_research.backends import CompatibleBackend
+
+        saved = {k: os.environ.pop(k, None) for k in ("GEMINI_API_KEY", "GOOGLE_API_KEY")}
+        try:
+            with self.assertRaises(RuntimeError):
+                CompatibleBackend("gemini")
+        finally:
+            for k, v in saved.items():
+                if v is not None:
+                    os.environ[k] = v
 
 
 class TestReports(unittest.TestCase):
@@ -1019,6 +1068,15 @@ class TestVisuals(unittest.TestCase):
         finally:
             visuals.render_chart = orig
 
+    def test_table_fallback_is_lossless(self):
+        # more data points than labels -> every value must still appear
+        spec = visuals.parse_chart_spec('{"type":"bar","labels":["a"],"values":[11,22,33]}')
+        from vibe_research.visuals import _spec_to_table
+
+        table = _spec_to_table(spec)
+        for v in ("11", "22", "33"):
+            self.assertIn(v, table)
+
 
 class TestCLI(unittest.TestCase):
     def _cfg_from(self, **kwargs):
@@ -1070,17 +1128,35 @@ class TestExport(unittest.TestCase):
     def test_docx_path_for(self):
         self.assertEqual(exportmod.docx_path_for("a/b.md").suffix, ".docx")
 
-    def test_html_renders_mermaid(self):
+    def test_html_renders_mermaid_safely(self):
         html = exportmod.markdown_to_html("# T\n\n```mermaid\nflowchart TD\n  A-->B\n```\n")
         self.assertIn('class="mermaid"', html)
         self.assertIn("mermaid.esm.min.mjs", html)
-        self.assertIn("A--&gt;B" if False else "A-->B", html)  # arrow preserved, unescaped
+        self.assertIn("flowchart", html)
+        self.assertIn("--&gt;", html)   # arrow kept escaped (browser decodes for mermaid)
+
+    def test_html_escapes_untrusted_script(self):
+        html = exportmod.markdown_to_html(
+            "Body\n\n```mermaid\n<script>alert(1)</script>\n```\n\n<script>alert(2)</script>"
+        )
+        self.assertNotIn("<script>alert", html)     # no live injected script node
+        self.assertIn("&lt;script&gt;", html)        # escaped instead
 
     def test_resolve_images_makes_local_absolute_keeps_remote(self):
         out = exportmod._resolve_images("![c](chart-1.png) ![w](https://x.com/i.png)", "/base/dir")
         norm = out.replace("\\", "/")
         self.assertIn("/base/dir", norm)               # relative -> absolute
         self.assertIn("https://x.com/i.png", out)      # remote untouched
+
+    def test_pdf_images_drops_remote_and_missing(self):
+        with tempfile.TemporaryDirectory() as d:
+            (pathlib.Path(d) / "chart.png").write_bytes(b"x")
+            md = "![local](chart.png) ![remote](https://x.com/i.png) ![gone](missing.png)"
+            out = exportmod._pdf_images(md, d)
+            self.assertIn((pathlib.Path(d) / "chart.png").as_posix(), out)  # existing local kept
+            self.assertNotIn("https://x.com/i.png", out)   # remote dropped (fpdf2 fetches eagerly)
+            self.assertNotIn("missing.png", out)           # missing local dropped
+            self.assertIn("*remote*", out)                 # replaced with caption
 
     @unittest.skipUnless(exportmod.docx_available(), "python-docx not installed")
     def test_markdown_to_docx_writes_file(self):

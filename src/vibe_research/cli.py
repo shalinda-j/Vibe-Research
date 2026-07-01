@@ -37,7 +37,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="Research a topic")
     run.add_argument("topic", nargs="+", help="The topic to research")
-    run.add_argument("--mode", choices=["auto", "api", "subscription", "openai"], help="Override backend mode")
+    run.add_argument("--mode", choices=["auto", "api", "subscription", "openai", "gemini", "glm", "kimi"],
+                     help="Override backend engine")
     run.add_argument("--no-tui", action="store_true", help="Run headless (print progress + report path)")
     run.add_argument("--parallel", type=int, help="Concurrent research threads")
     run.add_argument("--subquestions", type=int, help="How many sub-questions to research")
@@ -190,9 +191,11 @@ def cmd_doctor() -> int:
     print(f"  textual pkg     [{mark(avail['textual'])}] needed for the TUI")
     print(f"  anthropic pkg   [{mark(avail['anthropic'])}] needed for API mode")
     print(f"  claude-agent-sdk[{mark(avail['claude_agent_sdk'])}] needed for subscription mode")
-    print(f"  openai pkg      [{mark(avail['openai'])}] needed for OpenAI mode")
+    print(f"  openai pkg      [{mark(avail['openai'])}] needed for OpenAI/Gemini/GLM/Kimi modes")
     print(f"  ANTHROPIC_API_KEY[{mark(avail['api_key_set'])}] set in environment")
     print(f"  OPENAI_API_KEY  [{mark(avail['openai_key_set'])}] set in environment")
+    print(f"  GEMINI/GLM/KIMI [{mark(avail['gemini_key_set'])}/{mark(avail['glm_key_set'])}/"
+          f"{mark(avail['kimi_key_set'])}] keys set")
     try:
         print(f"  auto mode -> would use: {choose_mode('auto')}")
     except Exception as exc:
@@ -232,6 +235,8 @@ def cmd_doctor() -> int:
     print("                     pip install claude-agent-sdk ; unset ANTHROPIC_API_KEY")
     print("  OpenAI mode:       pip install openai ; export OPENAI_API_KEY=sk-... ;")
     print("                     run with --mode openai   (pay-per-token; no subscription API)")
+    print("  Gemini/GLM/Kimi:   pip install openai ; export GEMINI_API_KEY / GLM_API_KEY / KIMI_API_KEY ;")
+    print("                     run with --mode gemini|glm|kimi   (OpenAI-compatible; API key)")
     return 0
 
 

@@ -99,14 +99,21 @@ def parse_chart_spec(body: str) -> dict | None:
 
 
 def _spec_to_table(spec: dict) -> str:
-    """A Markdown table fallback when a chart can't be rendered to an image."""
-    labels = spec["labels"] or [str(i + 1) for i in range(len(spec["series"][0]["data"]))]
+    """A Markdown table fallback when a chart can't be rendered to an image.
+
+    Loss-less: the row count is driven by the *longest* series (labels are padded
+    with 1-based indices), so no data point is dropped even if the model supplied
+    fewer labels than data points.
+    """
+    n = max(len(s["data"]) for s in spec["series"])
+    labels = list(spec["labels"])
+    labels = (labels + [str(i + 1) for i in range(len(labels), n)])[:n]
     header = "| " + " | ".join(["Category"] + [s["name"] or f"Series {i+1}"
                                                for i, s in enumerate(spec["series"])]) + " |"
     divider = "| " + " | ".join(["---"] * (len(spec["series"]) + 1)) + " |"
     rows = []
-    for i, label in enumerate(labels):
-        cells = [label] + [
+    for i in range(n):
+        cells = [labels[i]] + [
             f"{s['data'][i]:g}" if i < len(s["data"]) else "" for s in spec["series"]
         ]
         rows.append("| " + " | ".join(cells) + " |")

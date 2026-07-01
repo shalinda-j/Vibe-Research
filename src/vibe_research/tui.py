@@ -258,19 +258,25 @@ class VibeResearchApp(App):
         title = self._last_topic or "vibe-research report"
         made: list = []
 
-        try:
-            from .export import (
-                docx_available, docx_path_for, html_path_for, markdown_to_docx,
-                markdown_to_html_file, markdown_to_pdf, pdf_available, pdf_path_for,
-            )
+        from .export import (
+            docx_available, docx_path_for, html_path_for, markdown_to_docx,
+            markdown_to_html_file, markdown_to_pdf, pdf_available, pdf_path_for,
+        )
 
-            made.append(markdown_to_html_file(md, html_path_for(base), title=title))
-            if pdf_available():
-                made.append(markdown_to_pdf(md, pdf_path_for(base), title=title, base_dir=base.parent))
-            if docx_available():
-                made.append(markdown_to_docx(md, docx_path_for(base), title=title, base_dir=base.parent))
-        except Exception as exc:
-            self._log(f"[red]Export error: {_esc(str(exc))}[/red]")
+        # Each format in its own guard so one failure never skips the others.
+        for label, fn in (
+            ("HTML", lambda: markdown_to_html_file(md, html_path_for(base), title=title)),
+            ("PDF", (lambda: markdown_to_pdf(md, pdf_path_for(base), title=title, base_dir=base.parent))
+                    if pdf_available() else None),
+            ("DOCX", (lambda: markdown_to_docx(md, docx_path_for(base), title=title, base_dir=base.parent))
+                     if docx_available() else None),
+        ):
+            if fn is None:
+                continue
+            try:
+                made.append(fn())
+            except Exception as exc:
+                self._log(f"[red]{label} export failed: {_esc(str(exc))}[/red]")
         if self._result:
             try:
                 from .reports import save_json

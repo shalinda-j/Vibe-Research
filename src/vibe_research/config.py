@@ -41,7 +41,7 @@ def default_memory_dir() -> Path:
 
 @dataclass
 class Config:
-    mode: str = "auto"                       # auto | api | subscription | openai
+    mode: str = "auto"                       # auto|api|subscription|openai|gemini|glm|kimi
     planner_model: str = "claude-opus-4-8"   # planning, fact-check, edit, write
     worker_model: str = "claude-sonnet-4-6"  # the many web-search calls
     max_parallel: int = 2                    # concurrent research threads
@@ -136,7 +136,7 @@ _BOOL_FIELDS = {
     "export_pdf", "export_html", "export_json", "export_docx", "open_after", "debug",
     "enable_charts", "enable_diagrams", "enable_figures",
 }
-_ALLOWED_MODES = {"auto", "api", "subscription", "openai"}
+_ALLOWED_MODES = {"auto", "api", "subscription", "openai", "gemini", "glm", "kimi"}
 _ALLOWED_CITATIONS = {"ranked", "plain"}
 _ALLOWED_STYLES = {"report", "essay", "brief"}
 _TRUE = {"1", "true", "yes", "on", "y"}

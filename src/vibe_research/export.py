@@ -72,6 +72,29 @@ def _find_unicode_font() -> tuple[Path, Path, Path, Path] | None:
 
 
 _IMG_REF = re.compile(r"(!\[[^\]]*\]\()([^)]+)(\))")
+_IMG_REF_ALT = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+
+
+def _pdf_images(markdown: str, base_dir) -> str:
+    """Prepare image refs for fpdf2, which loads every <img> eagerly and aborts
+    the whole PDF on any failure. Remote/data images are dropped to their caption
+    (fpdf2 would fetch them and a 404/timeout kills the render), and local images
+    are embedded only if the file actually exists — else replaced with the caption.
+    """
+    base = Path(base_dir) if base_dir else None
+
+    def _sub(match):
+        alt, src = match.group(1), match.group(2).strip()
+        if src.startswith(("http://", "https://", "data:")):
+            return f"*{alt}*" if alt else ""
+        path = Path(src)
+        if not path.is_absolute() and base is not None:
+            path = (base / src).resolve()
+        if path.is_file():
+            return f"![{alt}]({path.as_posix()})"
+        return f"*{alt}*" if alt else ""
+
+    return _IMG_REF_ALT.sub(_sub, markdown or "")
 
 
 def _resolve_images(markdown: str, base_dir) -> str:
@@ -116,8 +139,8 @@ def markdown_to_pdf(markdown: str, out_path: Path | str, title: str = "", base_d
         ) from exc
     from markdown_it import MarkdownIt
 
-    markdown = _resolve_images(markdown, base_dir)
-    html = MarkdownIt("commonmark").enable("table").render(markdown or "")
+    markdown = _pdf_images(markdown, base_dir)
+    html = MarkdownIt("commonmark", {"html": False}).enable("table").render(markdown or "")
     fonts = _find_unicode_font()
 
     class _ReportPDF(FPDF):
@@ -233,16 +256,18 @@ _MERMAID_CDN = (
 
 
 def _mermaidify(html: str) -> tuple[str, bool]:
-    """Turn ```mermaid code blocks into mermaid.js <div>s. Returns (html, had_any)."""
+    """Turn ```mermaid code blocks into mermaid.js <div>s. Returns (html, had_any).
+
+    The block content is left HTML-*escaped*: the browser decodes it into the
+    element's textContent (which is what mermaid.js parses, so arrows like ``-->``
+    still work), while any escaped ``<script>`` stays inert text rather than a
+    live node — no XSS from untrusted diagram content.
+    """
     found = {"any": False}
 
     def _sub(match):
         found["any"] = True
-        content = (
-            match.group(1)
-            .replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
-        )
-        return f'<div class="mermaid">{content}</div>'
+        return f'<div class="mermaid">{match.group(1)}</div>'
 
     return _MERMAID_CODE.sub(_sub, html), found["any"]
 
@@ -255,7 +280,9 @@ def markdown_to_html(markdown: str, title: str = "") -> str:
     """
     from markdown_it import MarkdownIt
 
-    body = MarkdownIt("commonmark").enable("table").render(markdown or "")
+    # html=False so raw HTML in LLM/web-derived report text is escaped, not
+    # injected live into the exported page.
+    body = MarkdownIt("commonmark", {"html": False}).enable("table").render(markdown or "")
     body, has_mermaid = _mermaidify(body)
     if has_mermaid:
         body += "\n" + _MERMAID_CDN
