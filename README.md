@@ -105,7 +105,10 @@ pipx install ".[subscription]"
 ```
 
 For **PDF export** (`--pdf` / `Ctrl+P`), add the `pdf` extra — pure-Python, no
-system libraries, and it uses a system Unicode font so accents/arrows render:
+system libraries, and it discovers a system Unicode font so accents/arrows render
+on **macOS, Windows and Linux** (macOS uses its bundled Arial; if no Unicode font
+loads, it falls back to a core font rather than failing). Opening reports and
+copying to the clipboard work natively on all three too.
 
 ```bash
 pipx install ".[pdf]"        # or: pip install fpdf2

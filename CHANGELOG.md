@@ -29,11 +29,18 @@ All notable changes to **vibe-research** are documented here. The format follows
   activity log shows a distinct "drill hop" line and the run header notes drill
   hops when enabled; the "Drilling deeper" stage has its own progress step.
 
+- **macOS is a first-class platform** — PDF export now discovers macOS's bundled
+  single-file Arial fonts (in `/System/Library/Fonts/Supplemental`) for full
+  Unicode + real bold/italic, and CI runs the suite on a macOS runner too.
+
 ### Fixed
 - **TUI findings counter** no longer overflows (e.g. `findings 5/3`) when the
   self-refining or drill rounds add research threads beyond the initial plan.
 - **TUI** cancelling a run can no longer leave the input box stuck disabled — the
   UI state resets before the backend is closed.
+- **PDF export is resilient to unloadable fonts** — a discovered font that fpdf2
+  can't load (e.g. a macOS `.ttc` collection) now degrades to the Latin-1 core
+  font instead of aborting the whole export.
 
 ## [0.6.0]
 

@@ -1356,6 +1356,34 @@ class TestExport(unittest.TestCase):
         self.assertEqual(exportmod.pdf_path_for(pathlib.Path("/x/y.md")).name, "y.pdf")
         self.assertEqual(exportmod.pdf_path_for("a/b/c.md").suffix, ".pdf")
 
+    def test_macos_font_setup(self):
+        """macOS: a single-file Arial family + the Supplemental dir are offered."""
+        from unittest import mock
+
+        families = [fam[0] for fam in exportmod._FONT_FAMILIES]
+        self.assertIn("Arial.ttf", families)   # fpdf2-friendly, real bold/italic
+        with mock.patch.object(exportmod.sys, "platform", "darwin"):
+            dirs = [str(p) for p in exportmod._font_dirs()]
+        self.assertIn("/System/Library/Fonts/Supplemental", dirs)
+
+    @unittest.skipUnless(exportmod.pdf_available(), "fpdf2 not installed")
+    def test_pdf_falls_back_when_font_unloadable(self):
+        """A discovered-but-unloadable font (e.g. a macOS .ttc fpdf2 rejects) must
+        still yield a PDF via the Latin-1 core-font fallback, not raise."""
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as d:
+            out = pathlib.Path(d) / "r.pdf"
+            bogus = (pathlib.Path(d) / "nope.ttc",) * 4  # missing -> add_font raises
+            with mock.patch.object(exportmod, "_find_unicode_font", return_value=bogus):
+                path = exportmod.markdown_to_pdf(
+                    "# Café\n\nBody with unicode → é ✓", out, title="Café"
+                )
+            self.assertTrue(path.exists())
+            self.assertGreater(path.stat().st_size, 0)
+            with open(path, "rb") as fh:
+                self.assertTrue(fh.read(5).startswith(b"%PDF"))
+
 
 class TestCliHeadless(unittest.TestCase):
     """Exercise the CLI headless glue end-to-end through the real entry point."""
