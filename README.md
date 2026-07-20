@@ -198,7 +198,8 @@ vibe-research --version
 ```
 
 In the **TUI**, `Ctrl+P` exports the current report to a PDF (saved next to the
-Markdown file); `Ctrl+S` copies it to the clipboard.
+Markdown file), `Ctrl+E` exports every format at once, `Ctrl+S` copies it to the
+clipboard, and `Ctrl+X` stops the current run without quitting.
 
 ### Config
 

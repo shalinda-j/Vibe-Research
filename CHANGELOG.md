@@ -25,6 +25,15 @@ All notable changes to **vibe-research** are documented here. The format follows
 - **Per-engine endpoint override** — `VIBE_<PROVIDER>_BASE_URL` points any
   compatible engine at a proxy, gateway, or self-hosted deployment.
 - `doctor` now shows a key-state grid for every engine and the drill setting.
+- **TUI** — a **`Ctrl+X` stop** cancels the current run without quitting; the
+  activity log shows a distinct "drill hop" line and the run header notes drill
+  hops when enabled; the "Drilling deeper" stage has its own progress step.
+
+### Fixed
+- **TUI findings counter** no longer overflows (e.g. `findings 5/3`) when the
+  self-refining or drill rounds add research threads beyond the initial plan.
+- **TUI** cancelling a run can no longer leave the input box stuck disabled — the
+  UI state resets before the backend is closed.
 
 ## [0.6.0]
 

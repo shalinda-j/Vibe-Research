@@ -6,11 +6,13 @@ time, findings completed, and how many sources have been gathered.
 
 Type a topic and press Enter, or pass one on the command line.
 
-Keys:  Ctrl+N new topic - Ctrl+L clear log - Ctrl+S copy report - F2 light/dark - Ctrl+Q quit
+Keys:  Ctrl+N new topic - Ctrl+X stop run - Ctrl+L clear log - Ctrl+S copy report -
+       F2 light/dark - Ctrl+Q quit
 """
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import time
 
@@ -76,6 +78,7 @@ class VibeResearchApp(App):
         Binding("ctrl+q", "quit", "Quit"),
         Binding("ctrl+c", "quit", "Quit", show=False),
         Binding("ctrl+n", "new_topic", "New topic"),
+        Binding("ctrl+x", "stop_run", "Stop run"),
         Binding("ctrl+l", "clear_log", "Clear log"),
         Binding("ctrl+s", "copy_report", "Copy report"),
         Binding("ctrl+p", "export_pdf", "Export PDF"),
@@ -103,6 +106,7 @@ class VibeResearchApp(App):
         self._confidence = None
         self._result = None
         self._backend = None
+        self._worker = None
         self._last_topic = topic or ""
 
     # ---------------------------------------------------------------- layout
@@ -119,8 +123,10 @@ class VibeResearchApp(App):
                     "Type a topic above and press **Enter** to begin.\n\n"
                     "A crew of agents will plan, research, fact-check (by debate), "
                     "and refine — then write a cited report here, with sources ranked "
-                    "by credibility.\n\n"
-                    "_Ctrl+E export all formats · Ctrl+P PDF · Ctrl+O open · Ctrl+S copy._"
+                    "by credibility. With **drill** on, it also digs deeper into its "
+                    "strongest finding.\n\n"
+                    "_Ctrl+E export all · Ctrl+P PDF · Ctrl+O open · Ctrl+S copy · "
+                    "Ctrl+X stop._"
                 )
         yield Footer()
 
@@ -202,10 +208,22 @@ class VibeResearchApp(App):
     def action_new_topic(self) -> None:
         inp = self.query_one("#topic", Input)
         if inp.disabled:
-            self._log("[yellow]Still researching — please wait for the current run to finish.[/yellow]")
+            self._log("[yellow]Still researching — press Ctrl+X to stop it first.[/yellow]")
             return
         inp.value = ""
         inp.focus()
+
+    def action_stop_run(self) -> None:
+        """Cancel the in-flight research run without quitting the app."""
+        if not self._busy:
+            self._log("[dim]Nothing running to stop.[/dim]")
+            return
+        self._log("[yellow]⏹ Stopping current run…[/yellow]")
+        # Cancel just this run's worker (not every Textual worker); its
+        # CancelledError unwinds through the worker's finally block, which
+        # re-enables input and resets state.
+        if self._worker is not None:
+            self._worker.cancel()
 
     def action_clear_log(self) -> None:
         self.query_one("#log", RichLog).clear()
@@ -360,9 +378,10 @@ class VibeResearchApp(App):
 
     def start_research(self, topic: str) -> None:
         if self._busy:
-            self._log("[yellow]Already researching — please wait for the current run to finish.[/yellow]")
+            self._log("[yellow]Already researching — press Ctrl+X to stop it first.[/yellow]")
             return
-        self.run_pipeline_worker(topic)
+        # Keep the worker handle so Ctrl+X can cancel exactly this run.
+        self._worker = self.run_pipeline_worker(topic)
 
     # ------------------------------------------------------------ the worker
 
@@ -394,9 +413,10 @@ class VibeResearchApp(App):
                 debate = f"{self.cfg.verifier_votes}-vote debate" if self.cfg.enable_debate else "single check"
                 mem = "memory on" if self.cfg.enable_memory else "memory off"
                 hum = "humanized" if self.cfg.humanize else "raw voice"
+                drill = f" · drill {self.cfg.drill_depth} hop(s)" if self.cfg.drill_depth else ""
                 self._log(
                     f"[dim]mode {self.cfg.mode} · {self.cfg.subquestions} sub-questions · "
-                    f"{self.cfg.max_parallel} parallel · ≤{self.cfg.max_iterations} rounds · "
+                    f"{self.cfg.max_parallel} parallel · ≤{self.cfg.max_iterations} rounds{drill} · "
                     f"{debate} · {mem} · {hum}[/dim]"
                 )
             elif kind == "stage":
@@ -418,6 +438,10 @@ class VibeResearchApp(App):
                     self._log(f"   [dim]•[/dim] {_esc(question)}")
             elif kind == "finding":
                 self._done_q += 1
+                # Gap-filling and drill rounds add threads beyond the initial plan,
+                # so keep the denominator honest — never show e.g. "findings 5/3".
+                if self._done_q > self._total_q:
+                    self._total_q = self._done_q
                 self._sources += int(data.get("n_sources", 0))
                 if self._total_q:
                     frac = min(1.0, self._done_q / self._total_q)
@@ -448,10 +472,19 @@ class VibeResearchApp(App):
                 for miss in data.get("missing", [])[:5]:
                     self._log(f"      [yellow]gap →[/yellow] {_esc(miss[:80])}")
             elif kind == "iteration":
-                self._log(
-                    f"[b cyan]↻ round {data['round']}/{data['max']}[/b cyan] "
-                    f"[dim]— researching {len(data.get('gaps', []))} gap thread(s)[/dim]"
-                )
+                n = len(data.get("gaps", []))
+                reason = data.get("reason", "")
+                if "drill" in reason.lower():
+                    # A recursive deepening hop, not a breadth gap-fill.
+                    self._log(
+                        f"[b blue]⤵ drill hop {data['round']}/{data['max']}[/b blue] "
+                        f"[dim]— {_esc(reason)} ({n} deeper thread(s))[/dim]"
+                    )
+                else:
+                    self._log(
+                        f"[b cyan]↻ round {data['round']}/{data['max']}[/b cyan] "
+                        f"[dim]— researching {n} gap thread(s)[/dim]"
+                    )
             elif kind == "done":
                 self._pct = 100.0
                 self._confidence = data.get("confidence")
@@ -533,21 +566,30 @@ class VibeResearchApp(App):
             except Exception:
                 pass
             self._log("[dim]Ctrl+S copy · Ctrl+E export all · Ctrl+O open · Ctrl+N new topic[/dim]")
+        except asyncio.CancelledError:
+            # Ctrl+X (or a new run) cancelled this one — unwind cleanly, keep any
+            # partial report on screen, and let the finally block reset the UI.
+            self._log("[yellow]⏹ Run stopped. Partial work discarded.[/yellow]")
+            self._stage = "stopped"
+            raise
         except Exception as exc:
             self._log(f"[red]✗ Error: {_esc(str(exc))}[/red]")
             self._report().update(f"# Something went wrong\n\n```\n{exc}\n```")
             self._stage = "error"
         finally:
-            if backend is not None:
-                try:
-                    await backend.aclose()
-                except Exception:
-                    pass
+            # Reset the UI first (all synchronous) so that if the run was
+            # cancelled, the awaited close below can't leave the input stuck
+            # disabled — a cancel re-raises CancelledError out of the await.
             self._busy = False
             self._stop_timer()
             inp.disabled = False
             inp.focus()
             self._refresh_status()
+            if backend is not None:
+                try:
+                    await backend.aclose()
+                except Exception:
+                    pass
 
 
 def run_tui(cfg: Config, topic: str | None = None) -> None:

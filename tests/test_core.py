@@ -1424,6 +1424,51 @@ class TestTUI(unittest.TestCase):
         self.assertIn("calls", usage)
         self.assertIn("2.0k tok", usage)   # 1200 + 800 tokens
 
+    @unittest.skipUnless(importlib.util.find_spec("textual"), "textual not installed")
+    def test_stop_binding_and_action_present(self):
+        from vibe_research.tui import VibeResearchApp
+
+        app = VibeResearchApp(cfgmod.default_config())
+        self.assertTrue(callable(getattr(app, "action_stop_run", None)))
+        self.assertIn("ctrl+x", {b.key for b in VibeResearchApp.BINDINGS})
+
+    @unittest.skipUnless(importlib.util.find_spec("textual"), "textual not installed")
+    def test_stage_maps_include_drill_and_stay_monotonic(self):
+        from vibe_research.tui import _STAGE_LABELS, _STAGE_PROGRESS
+
+        self.assertIn("drill", _STAGE_LABELS)
+        self.assertIn("drill", _STAGE_PROGRESS)
+        order = ["plan", "research", "verify", "critique", "drill", "write", "humanize"]
+        vals = [_STAGE_PROGRESS[s] for s in order]
+        self.assertEqual(vals, sorted(vals))                       # never rewinds
+        self.assertLess(_STAGE_PROGRESS["critique"], _STAGE_PROGRESS["drill"])
+        self.assertLess(_STAGE_PROGRESS["drill"], _STAGE_PROGRESS["write"])
+
+    @unittest.skipUnless(importlib.util.find_spec("textual"), "textual not installed")
+    def test_bar_clamps_and_fills(self):
+        from vibe_research.tui import _bar
+
+        self.assertIn("█", _bar(100))
+        self.assertNotIn("█", _bar(0))
+        self.assertIsInstance(_bar(-50), str)      # out-of-range clamped, no crash
+        self.assertIsInstance(_bar(150), str)
+
+    @unittest.skipUnless(importlib.util.find_spec("textual"), "textual not installed")
+    def test_headless_mount_and_actions(self):
+        """Mount the app headlessly and exercise the no-run actions."""
+        from vibe_research.tui import VibeResearchApp
+
+        async def go():
+            app = VibeResearchApp(cfgmod.default_config(), topic=None)  # no auto-run
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                app.action_stop_run()    # nothing running -> graceful no-op
+                app.action_new_topic()
+                app.action_clear_log()
+                app._refresh_status()
+                return app._busy
+        self.assertFalse(asyncio.run(go()))
+
 
 if __name__ == "__main__":
     unittest.main()
