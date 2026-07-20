@@ -87,6 +87,51 @@ host with `OLLAMA_HOST`; any engine's endpoint can be overridden with
 
 ---
 
+## Domain specialisation
+
+By default the crew is a generalist. Point it at a field with `--domain` (or a
+shorthand flag) and **every agent retunes** for that field — how the topic is
+decomposed, what counts as a good source, how claims are fact-checked, and how the
+report is structured.
+
+```bash
+vibe-research --medical "efficacy and safety of semaglutide for weight loss"
+```
+
+**`medical`** (drugs, chemicals, new therapies, clinical science) turns the crew
+into a biomedical evidence reviewer:
+
+- **Planner** decomposes along clinical axes — mechanism/pharmacology, efficacy &
+  trial evidence, safety & pharmacovigilance, dosing & pharmacokinetics,
+  contraindications & interactions, regulatory status, comparative effectiveness.
+- **Researchers** prioritise the evidence hierarchy — Cochrane systematic reviews
+  and meta-analyses → RCTs → observational studies (PubMed/PMC), registered trials
+  (ClinicalTrials.gov), and regulatory labels (FDA/EMA) — and tag each claim with
+  its **study type, sample size, and human-vs-preclinical** status.
+- **Fact-checkers** apply clinical-evidence grading (GRADE-style): a claim that
+  over-generalises from animal/in-vitro data, rests on one small study, or leans on
+  surrogate endpoints is marked unsupported. Safety, dosing and interaction claims
+  are checked hardest.
+- **Writer** produces a structured evidence review (Mechanism · Efficacy · Safety ·
+  Dosing · Interactions · Regulatory · Comparative), tags claims with an evidence
+  level, and never phrases anything as personal medical advice.
+- Clinical/regulatory sources (PubMed, ClinicalTrials.gov, Cochrane, FDA, EMA,
+  DrugBank, MedlinePlus, the NEJM/Lancet/JAMA/BMJ) rank at the top of the
+  credibility list.
+- Every medical report opens with a **safety disclaimer** — this is a research
+  summary, **not medical advice**; verify dosing/interactions against current
+  prescribing information and consult a professional.
+
+> ⚕️ **Not medical advice.** `medical` mode raises the evidentiary bar and cites
+> primary literature, but an LLM can still misread a study or miss a
+> contraindication. Read the sources and the "Confidence & Gaps" section before
+> relying on anything for a real clinical decision.
+
+`--domain general` (the default) is unchanged. More domains can be added in
+`domains.py` without touching the pipeline.
+
+---
+
 ## Install
 
 Like other terminal tools, `pipx` is the cleanest install (isolated, on your PATH):
@@ -154,6 +199,10 @@ vibe-research --mode gemini "topic"        # Gemini — also glm, kimi, deepseek
 vibe-research --mode perplexity "topic"    # Perplexity sonar (web search built in)
 vibe-research --mode ollama "topic"        # local & free (no API key needed)
 vibe-research run "topic" --parallel 3 --subquestions 6
+
+# domain specialisation
+vibe-research --medical "efficacy and safety of semaglutide for weight loss"
+vibe-research run "topic" --domain medical  # same as --medical (drugs, therapies, chemistry)
 
 # autonomy & depth knobs
 vibe-research run "topic" --iterations 3   # up to 3 self-refining (gap-filling) rounds
@@ -227,6 +276,7 @@ Stored at `~/.config/vibe-research/config.json`:
 | `only_domains` | `""` | comma-sep domain substrings to keep (e.g. `gov,edu`) |
 | `block_domains` | `""` | comma-sep domain substrings to drop (e.g. `reddit.com`) |
 | `verifier_model` / `writer_model` / `humanizer_model` | `""` | per-stage model overrides (empty → planner model) |
+| `domain` | `general` | `general` or `medical` — field-specific tuning for the whole crew |
 | `prose_style` | `report` | `report`, `essay`, or `brief` writing style |
 | `words` | `0` | target word count (`0` = model decides) |
 | `enable_charts` / `enable_diagrams` / `enable_figures` | `true` | allow data charts / mermaid diagrams / figures |

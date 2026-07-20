@@ -419,6 +419,11 @@ class VibeResearchApp(App):
                     f"{self.cfg.max_parallel} parallel · ≤{self.cfg.max_iterations} rounds{drill} · "
                     f"{debate} · {mem} · {hum}[/dim]"
                 )
+            elif kind == "domain":
+                self._log(
+                    f"[b blue]⚕ {_esc(data.get('label') or data.get('name', ''))} mode[/b blue] "
+                    f"[dim]— field-specific rigour + safety notice[/dim]"
+                )
             elif kind == "stage":
                 stage = data["stage"]
                 self._stage = _STAGE_LABELS.get(stage, stage)

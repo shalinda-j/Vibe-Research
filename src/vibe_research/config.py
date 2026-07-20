@@ -76,6 +76,9 @@ class Config:
     enable_diagrams: bool = True             # allow ```mermaid diagrams
     enable_figures: bool = True              # allow embedded figure/image references
 
+    # --- domain specialisation -----------------------------------------------
+    domain: str = "general"                  # general | medical (field-specific crew tuning)
+
     # --- output --------------------------------------------------------------
     export_pdf: bool = False                  # also write a PDF beside each report
     export_html: bool = False                 # also write an HTML page beside each report
@@ -143,6 +146,7 @@ _ALLOWED_MODES = {
 }
 _ALLOWED_CITATIONS = {"ranked", "plain"}
 _ALLOWED_STYLES = {"report", "essay", "brief"}
+_ALLOWED_DOMAINS = {"general", "medical"}   # keep in sync with domains.DOMAINS
 _TRUE = {"1", "true", "yes", "on", "y"}
 _FALSE = {"0", "false", "no", "off", "n"}
 
@@ -187,6 +191,10 @@ def apply_setting(cfg: Config, key: str, value: str) -> None:
         setattr(cfg, key, value)
     elif key == "prose_style":
         if value not in _ALLOWED_STYLES:
+            raise ValueError(value)
+        setattr(cfg, key, value)
+    elif key == "domain":
+        if value not in _ALLOWED_DOMAINS:
             raise ValueError(value)
         setattr(cfg, key, value)
     else:

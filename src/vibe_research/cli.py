@@ -79,6 +79,10 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--words", type=int, metavar="N", help="Target word count for the report")
     run.add_argument("--pages", type=int, metavar="N", help="Target page count (~500 words/page)")
     run.add_argument("--style", choices=["report", "essay", "brief"], help="Writing style")
+    run.add_argument("--domain", choices=["general", "medical"],
+                     help="Specialise the crew for a field (medical: clinical-evidence rigour + safety)")
+    run.add_argument("--medical", action="store_true",
+                     help="Shorthand for --domain medical (drugs, therapies, clinical research)")
     run.add_argument("--no-charts", action="store_true", help="Don't render data charts")
     run.add_argument("--no-diagrams", action="store_true", help="Don't include mermaid diagrams")
     run.add_argument("--no-figures", action="store_true", help="Don't embed figure/image references")
@@ -177,6 +181,10 @@ def _cfg_from_args(cfg: Config, args: argparse.Namespace) -> Config:
         cfg.words = max(0, args.pages) * 500   # ~500 words per page
     if getattr(args, "style", None):
         cfg.prose_style = args.style
+    if getattr(args, "medical", False):
+        cfg.domain = "medical"           # shorthand, applied first…
+    if getattr(args, "domain", None):
+        cfg.domain = args.domain         # …so an explicit --domain wins if both given
     if getattr(args, "no_charts", False):
         cfg.enable_charts = False
     if getattr(args, "no_diagrams", False):
@@ -217,6 +225,12 @@ def cmd_doctor() -> int:
     print()
     print("Multi-agent pipeline:")
     print(f"  crew            planner · researcher · verifier · editor · writer · humanizer")
+    if cfg.domain and cfg.domain != "general":
+        from .domains import get_domain
+        print(f"  domain          {cfg.domain} — {get_domain(cfg.domain).label} "
+              f"(clinical-evidence rigour + safety disclaimer)")
+    else:
+        print(f"  domain          general (specialise with --domain medical / --medical)")
     print(f"  self-refine     up to {cfg.max_iterations} round(s), stop at "
           f"confidence >= {cfg.quality_threshold:.0%}")
     print(f"  drill deeper    "
@@ -388,7 +402,10 @@ def _run_headless(cfg: Config, topic: str, *, quiet: bool = False, verbose: bool
                 return
             if quiet:
                 return
-            if kind == "memory" and data.get("recalled"):
+            if kind == "domain":
+                print(f"⚕ {data.get('label') or data.get('name')} mode — "
+                      "field-specific rigour + safety notice")
+            elif kind == "memory" and data.get("recalled"):
                 print(f"🧠 recalled {data['recalled']} related past run(s): "
                       f"{', '.join(data.get('topics', []))[:80]}")
             elif kind == "stage":

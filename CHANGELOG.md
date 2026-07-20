@@ -4,6 +4,29 @@ All notable changes to **vibe-research** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project uses
 [semantic versioning](https://semver.org/).
 
+## [0.8.0]
+
+### Added
+- **Domain specialisation, starting with `medical`** — `--medical` (or `--domain
+  medical`) retunes the *whole crew* for biomedical research (drugs, chemicals, new
+  therapies, clinical science):
+  - the **planner** decomposes along clinical axes (mechanism, efficacy, safety,
+    dosing, interactions, regulatory status, comparative effectiveness);
+  - **researchers** follow the evidence hierarchy (Cochrane/meta-analyses → RCTs →
+    observational, via PubMed/ClinicalTrials/FDA/EMA) and tag each claim's study
+    type, sample size, and human-vs-preclinical status;
+  - **fact-checkers** apply GRADE-style evidence grading and are strictest on
+    safety/dosing/interaction claims;
+  - the **writer** produces a structured evidence review with evidence-level tags
+    and never gives personal medical advice;
+  - every medical report opens with a **safety disclaimer**.
+- **Clinical/regulatory sources** (ClinicalTrials.gov, Cochrane, FDA, EMA,
+  DrugBank, MedlinePlus, JAMA, bioRxiv/medRxiv, NICE, …) now rank at the top of the
+  credibility list.
+- New `domain` config key + a `⚕ medical mode` line in the TUI/headless run header
+  and `doctor`. New domains can be added in `domains.py` without touching the
+  pipeline. (`--domain general`, the default, is unchanged.)
+
 ## [0.7.0]
 
 ### Added
@@ -141,6 +164,7 @@ All notable changes to **vibe-research** are documented here. The format follows
 - Initial release: linear plan → research → verify → write pipeline, Textual TUI,
   API and subscription backends.
 
+[0.8.0]: https://github.com/shalinda-j/Vibe-Research/releases
 [0.7.0]: https://github.com/shalinda-j/Vibe-Research/releases
 [0.6.0]: https://github.com/shalinda-j/Vibe-Research/releases
 [0.5.0]: https://github.com/shalinda-j/Vibe-Research/releases
