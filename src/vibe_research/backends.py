@@ -50,13 +50,17 @@ def extract_urls(text: str) -> list[str]:
     return out
 
 
-# OpenAI-compatible providers. Gemini, GLM (Zhipu) and Kimi (Moonshot) all expose
-# an OpenAI-style chat-completions endpoint, so they run through the same `openai`
+# OpenAI-compatible providers. Gemini, GLM (Zhipu), Kimi (Moonshot), DeepSeek,
+# Groq, Mistral, OpenRouter, Perplexity, xAI (Grok) and Ollama all expose an
+# OpenAI-style chat-completions endpoint, so they run through the same `openai`
 # client with a different base_url — no extra dependency. Each entry gives the
 # endpoint, which env var(s) hold the key, sensible strong/fast default models
 # (so Claude-named config defaults auto-map on `--mode <provider>`), and whether a
-# simple inline web-search tool is available. All are pay-per-token API keys —
-# none offer a subscription-login API path.
+# simple inline web-search tool is available. Most are pay-per-token API keys —
+# none offer a subscription-login API path — and one (Ollama) runs fully local
+# and free (``local: True`` → no key required). The ``base_url`` for any provider
+# can be overridden at runtime with ``VIBE_<PROVIDER>_BASE_URL`` (e.g. to point at
+# a proxy, a self-hosted gateway, or a remote Ollama host).
 _PROVIDERS = {
     "openai": {
         "base_url": None,  # native OpenAI (Responses API), handled by OpenAIBackend
@@ -78,10 +82,52 @@ _PROVIDERS = {
         "key_env": ("KIMI_API_KEY", "MOONSHOT_API_KEY"),
         "strong": "kimi-k2-0905-preview", "fast": "moonshot-v1-8k", "search": None,
     },
+    "deepseek": {
+        "base_url": "https://api.deepseek.com",
+        "key_env": ("DEEPSEEK_API_KEY",),
+        "strong": "deepseek-reasoner", "fast": "deepseek-chat", "search": None,
+    },
+    "groq": {
+        "base_url": "https://api.groq.com/openai/v1",
+        "key_env": ("GROQ_API_KEY",),
+        "strong": "llama-3.3-70b-versatile", "fast": "llama-3.1-8b-instant", "search": None,
+    },
+    "mistral": {
+        "base_url": "https://api.mistral.ai/v1",
+        "key_env": ("MISTRAL_API_KEY",),
+        "strong": "mistral-large-latest", "fast": "mistral-small-latest", "search": None,
+    },
+    "openrouter": {
+        "base_url": "https://openrouter.ai/api/v1",
+        "key_env": ("OPENROUTER_API_KEY",),
+        "strong": "openai/gpt-4o", "fast": "openai/gpt-4o-mini", "search": None,
+    },
+    "perplexity": {
+        # Perplexity's `sonar` models search the live web on every call — no tool
+        # needed — and return the URLs they used in a top-level `citations` field.
+        "base_url": "https://api.perplexity.ai",
+        "key_env": ("PERPLEXITY_API_KEY", "PPLX_API_KEY"),
+        "strong": "sonar-pro", "fast": "sonar", "search": "builtin",
+    },
+    "xai": {
+        "base_url": "https://api.x.ai/v1",
+        "key_env": ("XAI_API_KEY", "GROK_API_KEY"),
+        "strong": "grok-2-latest", "fast": "grok-2-latest", "search": None,
+    },
+    "ollama": {
+        # Local, free, offline. No API key; the OpenAI client just needs a
+        # placeholder. Point elsewhere with OLLAMA_HOST or VIBE_OLLAMA_BASE_URL.
+        "base_url": "http://localhost:11434/v1",
+        "key_env": (),
+        "strong": "llama3.1", "fast": "llama3.1", "search": None, "local": True,
+    },
 }
 
 # Providers that run on the shared OpenAI-compatible chat-completions backend.
-COMPATIBLE_PROVIDERS = ("gemini", "glm", "kimi")
+COMPATIBLE_PROVIDERS = (
+    "gemini", "glm", "kimi", "deepseek", "groq", "mistral",
+    "openrouter", "perplexity", "xai", "ollama",
+)
 
 
 def _provider_key(provider: str) -> str | None:
@@ -90,6 +136,24 @@ def _provider_key(provider: str) -> str | None:
         if val:
             return val
     return None
+
+
+def _provider_base_url(provider: str) -> str | None:
+    """The effective base URL for a compatible provider.
+
+    A ``VIBE_<PROVIDER>_BASE_URL`` env var wins for any provider (proxy / gateway
+    / self-hosted). Ollama additionally honours the conventional ``OLLAMA_HOST``,
+    appending the ``/v1`` OpenAI path if the host was given without it.
+    """
+    override = os.environ.get(f"VIBE_{provider.upper()}_BASE_URL")
+    if override:
+        return override
+    if provider == "ollama":
+        host = os.environ.get("OLLAMA_HOST")
+        if host:
+            host = host.rstrip("/")
+            return host if host.endswith("/v1") else host + "/v1"
+    return _PROVIDERS.get(provider, {}).get("base_url")
 
 
 def _pick_model(model: str, provider: str, tier: str) -> str:
@@ -449,12 +513,14 @@ class OpenAIBackend(Backend):
 
 
 class CompatibleBackend(Backend):
-    """Any OpenAI-compatible chat-completions endpoint (Gemini, GLM, Kimi).
+    """Any OpenAI-compatible chat-completions endpoint.
 
-    Runs through the same ``openai`` client with the provider's ``base_url`` and
-    API key. All are pay-per-token — there is no subscription-login API path.
-    Live web search is only wired where the provider exposes a simple inline tool
-    (GLM); for the others the model answers from its own knowledge (the
+    Covers Gemini, GLM, Kimi, DeepSeek, Groq, Mistral, OpenRouter, Perplexity,
+    xAI (Grok) and local Ollama — all through the same ``openai`` client with the
+    provider's ``base_url`` and API key. Most are pay-per-token (no subscription
+    path); Ollama runs local and free (no key). Live web search is wired where the
+    provider exposes it — GLM's inline tool, and Perplexity's `sonar` models which
+    search on every call — otherwise the model answers from its own knowledge (the
     fact-checker then scores sourcing accordingly).
     """
 
@@ -474,22 +540,27 @@ class CompatibleBackend(Backend):
                 '    (or: pip install "vibe-research[openai]")'
             ) from exc
         key = _provider_key(provider)
-        if not key:
+        if not key and not prov.get("local"):
             envs = " or ".join(prov["key_env"])
             raise RuntimeError(
                 f"{provider} mode needs an API key.\n"
                 f"    export {prov['key_env'][0]}=...   (checked: {envs})\n"
                 f"    ({provider} bills per token — there is no subscription API path.)"
             )
-        self._client = AsyncOpenAI(api_key=key, base_url=prov["base_url"])
+        # Local engines (Ollama) need no real key, but the OpenAI client still
+        # requires a non-empty placeholder string.
+        self._client = AsyncOpenAI(
+            api_key=key or "local", base_url=_provider_base_url(provider)
+        )
 
     async def _complete_once(
         self, prompt: str, model: str, use_search: bool = False
     ) -> tuple[str, list[str]]:
         model = _pick_model(model, self.name, "strong")
         kwargs = {"model": model, "messages": [{"role": "user", "content": prompt}]}
-        if use_search and self._prov["search"] == "glm":
-            # Zhipu GLM's inline web-search tool.
+        if use_search and self._prov.get("search") == "glm":
+            # Zhipu GLM's inline web-search tool. (Perplexity's `sonar` models
+            # search automatically, so they need no tool here.)
             kwargs["tools"] = [{"type": "web_search", "web_search": {"enable": True}}]
         response = await self._client.chat.completions.create(**kwargs)
 
@@ -501,7 +572,15 @@ class CompatibleBackend(Backend):
         text = ""
         if getattr(response, "choices", None):
             text = getattr(response.choices[0].message, "content", "") or ""
-        return text, extract_urls(text)
+        urls = extract_urls(text)
+        # Some search-native providers (Perplexity `sonar`) return the sources
+        # they used in a top-level `citations` list rather than inline in the
+        # text — fold those in so the report stays fully cited.
+        for cite in getattr(response, "citations", None) or []:
+            url = cite if isinstance(cite, str) else getattr(cite, "url", None)
+            if url and url not in urls:
+                urls.append(url)
+        return text, urls
 
     async def aclose(self) -> None:
         try:
@@ -512,6 +591,14 @@ class CompatibleBackend(Backend):
 
 def detect_available() -> dict:
     """Report which backends' prerequisites are present. Never imports them."""
+    # Keys for every compatible provider, keyed by name. Ollama is local/keyless,
+    # so "availability" is whether its server is reachable at runtime, not a key —
+    # reported separately below.
+    provider_keys = {
+        p: (_provider_key(p) is not None)
+        for p in COMPATIBLE_PROVIDERS
+        if not _PROVIDERS[p].get("local")
+    }
     return {
         "anthropic": importlib.util.find_spec("anthropic") is not None,
         "claude_agent_sdk": importlib.util.find_spec("claude_agent_sdk") is not None,
@@ -519,9 +606,13 @@ def detect_available() -> dict:
         "textual": importlib.util.find_spec("textual") is not None,
         "api_key_set": bool(os.environ.get("ANTHROPIC_API_KEY")),
         "openai_key_set": bool(os.environ.get("OPENAI_API_KEY")),
+        # Back-compat individual flags (kept for existing callers/tests).
         "gemini_key_set": _provider_key("gemini") is not None,
         "glm_key_set": _provider_key("glm") is not None,
         "kimi_key_set": _provider_key("kimi") is not None,
+        # New: every compatible provider's key state, plus the local engine.
+        "provider_keys": provider_keys,
+        "ollama_local": True,
     }
 
 

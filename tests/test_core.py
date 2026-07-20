@@ -151,6 +151,28 @@ class DropSectionBackend(FakeBackend):
         return await super().complete(prompt, model, use_search)
 
 
+class DrillBackend(FakeBackend):
+    """Answers the planner's 'drill deeper' prompt so recursive deepening runs.
+
+    Each drill call returns a *distinct* deeper sub-question (counter-keyed) so a
+    multi-hop drill adds several new findings instead of de-duping to one.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.drill_calls = 0
+
+    async def complete(self, prompt, model, use_search=False):
+        if "going DEEPER on one finding" in prompt:
+            self.drill_calls += 1
+            self.calls.append((model, use_search))
+            return (
+                '{"subquestions": [{"text": "Deeper mechanism question number '
+                f'{self.drill_calls} about the finding?"}}]}}'
+            ), []
+        return await super().complete(prompt, model, use_search)
+
+
 # --- concrete backends that exercise the base reliability wrapper -----------
 
 
@@ -441,6 +463,15 @@ class TestConfig(unittest.TestCase):
         cfgmod.apply_setting(cfg, "mode", "gemini")
         self.assertEqual(cfg.mode, "gemini")
 
+        # v0.7 engines + recursive drill knob
+        for m in ("deepseek", "groq", "mistral", "openrouter", "perplexity", "xai", "ollama"):
+            cfgmod.apply_setting(cfg, "mode", m)
+            self.assertEqual(cfg.mode, m)
+        cfgmod.apply_setting(cfg, "drill_depth", "3")
+        self.assertEqual(cfg.drill_depth, 3)
+        cfgmod.apply_setting(cfg, "drill_depth", "0")           # 0 allowed (off)
+        self.assertEqual(cfg.drill_depth, 0)
+
         # v0.5 writing/visuals knobs
         cfgmod.apply_setting(cfg, "words", "1500")
         self.assertEqual(cfg.words, 1500)
@@ -466,6 +497,8 @@ class TestConfig(unittest.TestCase):
             cfgmod.apply_setting(cfg, "subquestions", "-2")    # must be >= 1
         with self.assertRaises(ValueError):
             cfgmod.apply_setting(cfg, "quality_threshold", "2.0")  # out of [0,1]
+        with self.assertRaises(ValueError):
+            cfgmod.apply_setting(cfg, "drill_depth", "-1")     # must be >= 0
         with self.assertRaises(ValueError):
             cfgmod.apply_setting(cfg, "enable_memory", "maybe")
         with self.assertRaises(ValueError):
@@ -590,6 +623,76 @@ class TestCompatibleProviders(unittest.TestCase):
             for k, v in saved.items():
                 if v is not None:
                     os.environ[k] = v
+
+    def test_choose_mode_all_new_providers(self):
+        for m in ("deepseek", "groq", "mistral", "openrouter", "perplexity", "xai", "ollama"):
+            self.assertEqual(choose_mode(m), m)
+
+    def test_resolve_models_new_providers(self):
+        from vibe_research.backends import resolve_models
+
+        cases = {
+            "deepseek": ("deepseek-reasoner", "deepseek-chat"),
+            "groq": ("llama-3.3-70b-versatile", "llama-3.1-8b-instant"),
+            "mistral": ("mistral-large-latest", "mistral-small-latest"),
+            "perplexity": ("sonar-pro", "sonar"),
+            "ollama": ("llama3.1", "llama3.1"),
+        }
+        for provider, expected in cases.items():
+            self.assertEqual(
+                resolve_models(provider, "claude-opus-4-8", "claude-sonnet-4-6"),
+                expected,
+                msg=provider,
+            )
+
+    def test_detect_available_provider_keys_map(self):
+        from vibe_research.backends import detect_available
+
+        avail = detect_available()
+        self.assertIn("provider_keys", avail)
+        # Every keyed compatible provider appears; local Ollama does not.
+        for p in ("gemini", "deepseek", "groq", "mistral", "openrouter", "perplexity", "xai"):
+            self.assertIn(p, avail["provider_keys"])
+        self.assertNotIn("ollama", avail["provider_keys"])
+        self.assertTrue(avail["ollama_local"])
+
+    def test_provider_base_url_override(self):
+        from vibe_research.backends import _provider_base_url
+
+        # Explicit per-provider override wins.
+        os.environ["VIBE_DEEPSEEK_BASE_URL"] = "http://proxy.local/v1"
+        try:
+            self.assertEqual(_provider_base_url("deepseek"), "http://proxy.local/v1")
+        finally:
+            del os.environ["VIBE_DEEPSEEK_BASE_URL"]
+        # Ollama honours OLLAMA_HOST and appends the /v1 OpenAI path if missing.
+        saved = os.environ.pop("OLLAMA_HOST", None)
+        os.environ["OLLAMA_HOST"] = "http://box:11434"
+        try:
+            self.assertEqual(_provider_base_url("ollama"), "http://box:11434/v1")
+        finally:
+            os.environ.pop("OLLAMA_HOST", None)
+            if saved is not None:
+                os.environ["OLLAMA_HOST"] = saved
+        # Default when nothing is overridden.
+        self.assertEqual(_provider_base_url("groq"), "https://api.groq.com/openai/v1")
+
+    def test_perplexity_marked_search_native(self):
+        from vibe_research.backends import _PROVIDERS
+
+        self.assertEqual(_PROVIDERS["perplexity"]["search"], "builtin")
+
+    @unittest.skipUnless(importlib.util.find_spec("openai"), "openai not installed")
+    def test_ollama_backend_needs_no_key(self):
+        from vibe_research.backends import CompatibleBackend
+
+        saved = os.environ.pop("OLLAMA_HOST", None)
+        try:
+            backend = CompatibleBackend("ollama")  # must NOT raise despite no key
+            self.assertEqual(backend.name, "ollama")
+        finally:
+            if saved is not None:
+                os.environ["OLLAMA_HOST"] = saved
 
 
 class TestReports(unittest.TestCase):
@@ -809,6 +912,50 @@ class TestOrchestrator(unittest.TestCase):
         self.assertEqual(kinds.count("finding"), 4)
         self.assertIn("iteration", kinds)
         self.assertEqual(backend.editor_calls, 2)
+
+    def test_drill_deepens_recursively(self):
+        backend = DrillBackend()
+        events = []
+        report = asyncio.run(
+            run_pipeline(
+                backend,
+                "Test topic",
+                planner_model="planner",
+                worker_model="worker",
+                subquestions=3,
+                max_parallel=2,
+                drill_depth=2,
+                on_event=lambda k, d: events.append((k, d)),
+            )
+        )
+        kinds = [k for k, _ in events]
+        stages = [d.get("stage") for k, d in events if k == "stage"]
+        # 3 breadth findings + 2 deeper (drilled) ones, each fact-checked.
+        self.assertEqual(kinds.count("finding"), 5)
+        self.assertEqual(kinds.count("debate"), 5)
+        self.assertIn("drill", stages)
+        self.assertEqual(backend.drill_calls, 2)
+        # The deeper findings are real research threads folded into the report.
+        self.assertIn("Confidence & Gaps", report)
+
+    def test_drill_off_by_default(self):
+        backend = DrillBackend()
+        events = []
+        asyncio.run(
+            run_pipeline(
+                backend,
+                "Test topic",
+                planner_model="planner",
+                worker_model="worker",
+                subquestions=3,
+                max_parallel=2,
+                on_event=lambda k, d: events.append((k, d)),
+            )
+        )
+        stages = [d.get("stage") for k, d in events if k == "stage"]
+        self.assertNotIn("drill", stages)
+        self.assertEqual(backend.drill_calls, 0)
+        self.assertEqual([k for k, _ in events].count("finding"), 3)
 
     def test_memory_persisted_after_run(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1091,11 +1238,18 @@ class TestCLI(unittest.TestCase):
     def test_depth_preset(self):
         cfg = self._cfg_from(depth="deep")
         self.assertEqual((cfg.subquestions, cfg.verifier_votes, cfg.max_iterations), (8, 3, 3))
+        self.assertEqual(cfg.drill_depth, 2)        # 'deep' now recurses too
 
     def test_depth_preset_explicit_override_wins(self):
         cfg = self._cfg_from(depth="quick", subquestions=6)
         self.assertEqual(cfg.subquestions, 6)       # explicit beats preset
         self.assertEqual(cfg.verifier_votes, 1)     # rest still from 'quick'
+
+    def test_drill_flag(self):
+        self.assertEqual(self._cfg_from(drill=3).drill_depth, 3)
+        self.assertEqual(self._cfg_from(drill=0).drill_depth, 0)
+        # explicit --drill overrides the depth preset
+        self.assertEqual(self._cfg_from(depth="deep", drill=5).drill_depth, 5)
 
     def test_pages_maps_to_words(self):
         self.assertEqual(self._cfg_from(pages=3).words, 1500)

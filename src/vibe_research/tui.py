@@ -31,8 +31,9 @@ _STAGE_LABELS = {
     "research": "2) Researching",
     "verify": "3) Fact-checking",
     "critique": "4) Editor review",
-    "write": "5) Writing",
-    "humanize": "6) Humanizing",
+    "drill": "5) Drilling deeper",
+    "write": "6) Writing",
+    "humanize": "7) Humanizing",
 }
 
 # Coarse progress (%) reached when each stage *begins*. Research is the variable
@@ -40,7 +41,7 @@ _STAGE_LABELS = {
 # land. Progress is kept monotonic (never jumps backwards) so the self-refining
 # loop's extra research rounds don't rewind the bar.
 _STAGE_PROGRESS = {
-    "plan": 5, "research": 8, "verify": 68, "critique": 80, "write": 88, "humanize": 95,
+    "plan": 5, "research": 8, "verify": 68, "critique": 80, "drill": 84, "write": 88, "humanize": 95,
 }
 _RESEARCH_SPAN = _STAGE_PROGRESS["verify"] - _STAGE_PROGRESS["research"]  # 8 -> 68
 

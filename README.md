@@ -40,7 +40,7 @@ isn't the same as "safe to use unread for things that bite you."
 
 ## Engines, one tool
 
-`vibe-research` runs on any of several backends. It **auto-detects** an Anthropic
+`vibe-research` runs on any of a dozen backends. It **auto-detects** an Anthropic
 engine, or you can force one with `--mode`.
 
 | Mode | Engine | Billing | Best for |
@@ -51,13 +51,28 @@ engine, or you can force one with `--mode`.
 | `gemini` | Google Gemini (OpenAI-compat) | pay-per-token (Google) | Gemini models |
 | `glm` | Zhipu GLM (OpenAI-compat) | pay-per-token (Zhipu) | GLM models / built-in web search |
 | `kimi` | Moonshot Kimi (OpenAI-compat) | pay-per-token (Moonshot) | Kimi models |
+| `deepseek` | DeepSeek (OpenAI-compat) | pay-per-token (DeepSeek) | cheap, strong reasoning (R1) |
+| `groq` | Groq (OpenAI-compat) | pay-per-token (Groq) | very fast Llama inference |
+| `mistral` | Mistral (OpenAI-compat) | pay-per-token (Mistral) | Mistral / open-weight models |
+| `openrouter` | OpenRouter (OpenAI-compat) | pay-per-token (OpenRouter) | one key, hundreds of models |
+| `perplexity` | Perplexity `sonar` (OpenAI-compat) | pay-per-token (Perplexity) | **web search built into every call** |
+| `xai` | xAI Grok (OpenAI-compat) | pay-per-token (xAI) | Grok models |
+| `ollama` | Ollama (OpenAI-compat) | **free / local / offline** | private runs, no API key |
 
-The `gemini`/`glm`/`kimi` engines all speak the OpenAI API, so they need the same
-`[openai]` extra and their own API key (`GEMINI_API_KEY` / `GLM_API_KEY` /
-`KIMI_API_KEY`). Claude-named model defaults auto-map to each provider's models;
-override with `--planner-model`/`--worker-model`. Live web search is built in for
-`api`, `openai`, and `glm`; the others answer from model knowledge (the
-fact-checker scores sourcing accordingly).
+Every engine except `api`/`subscription` speaks the OpenAI API, so they share the
+same `[openai]` extra and their own API key (`OPENAI_API_KEY`, `GEMINI_API_KEY`,
+`GLM_API_KEY`, `KIMI_API_KEY`, `DEEPSEEK_API_KEY`, `GROQ_API_KEY`,
+`MISTRAL_API_KEY`, `OPENROUTER_API_KEY`, `PERPLEXITY_API_KEY`, `XAI_API_KEY`).
+Claude-named model defaults auto-map to each provider's models; override with
+`--planner-model`/`--worker-model`. Live web search is built in for `api`,
+`openai`, `glm`, and **`perplexity`** (its `sonar` models search on every call and
+return their citations); the others answer from model knowledge (the fact-checker
+scores sourcing accordingly).
+
+**`ollama` runs fully local and free** — no key. Install [Ollama](https://ollama.com),
+`ollama pull llama3.1`, then `vibe-research --mode ollama "topic"`. Point at a remote
+host with `OLLAMA_HOST`; any engine's endpoint can be overridden with
+`VIBE_<PROVIDER>_BASE_URL` (handy for gateways/proxies).
 
 > **Subscription mode caveat.** Anthropic does not permit third-party apps to offer
 > claude.ai login to *other* users without prior approval, and the subscription-billing
@@ -131,11 +146,15 @@ vibe-research "your topic"                 # TUI (default)
 vibe-research run "your topic" --no-tui    # headless: prints progress + saves report
 vibe-research --mode subscription "topic"  # force subscription engine
 vibe-research --mode openai "topic"        # use OpenAI (needs OPENAI_API_KEY)
-vibe-research --mode gemini "topic"        # Gemini (GEMINI_API_KEY) — also glm, kimi
+vibe-research --mode gemini "topic"        # Gemini — also glm, kimi, deepseek,
+                                           #   groq, mistral, openrouter, xai
+vibe-research --mode perplexity "topic"    # Perplexity sonar (web search built in)
+vibe-research --mode ollama "topic"        # local & free (no API key needed)
 vibe-research run "topic" --parallel 3 --subquestions 6
 
-# autonomy knobs
+# autonomy & depth knobs
 vibe-research run "topic" --iterations 3   # up to 3 self-refining (gap-filling) rounds
+vibe-research run "topic" --drill 2        # recurse 2 hops DEEPER into the strongest finding
 vibe-research run "topic" --votes 3        # 3 adversarial fact-checkers per finding
 vibe-research run "topic" --quality 0.85   # keep refining until 85% confidence
 vibe-research run "topic" --no-debate      # single fact-check instead of a vote
@@ -143,7 +162,7 @@ vibe-research run "topic" --no-memory      # don't recall or persist memory
 vibe-research run "topic" --no-humanize    # skip the human-voice rewrite (raw draft)
 
 # sourcing & depth
-vibe-research run "topic" --depth deep          # quick | standard | deep preset
+vibe-research run "topic" --depth deep          # quick | standard | deep (deep also drills)
 vibe-research run "topic" --since 2022          # prefer recent sources
 vibe-research run "topic" --only-domains gov,edu     # restrict to trusted domains
 vibe-research run "topic" --block-domains reddit.com # drop specific domains
@@ -187,12 +206,13 @@ Stored at `~/.config/vibe-research/config.json`:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `mode` | `auto` | `auto`, `api`, `subscription`, or `openai` |
+| `mode` | `auto` | `auto`, `api`, `subscription`, `openai`, `gemini`, `glm`, `kimi`, `deepseek`, `groq`, `mistral`, `openrouter`, `perplexity`, `xai`, `ollama` |
 | `planner_model` | `claude-opus-4-8` | planning, fact-check, editing, write-up |
 | `worker_model` | `claude-sonnet-4-6` | the many web-search calls |
 | `max_parallel` | `2` | concurrent research threads |
 | `subquestions` | `5` | how many sub-questions to research |
 | `max_iterations` | `2` | self-refining rounds (re-plan + research gaps) |
+| `drill_depth` | `0` | recursive deepening hops into the strongest finding (`0` = off) |
 | `verifier_votes` | `2` | adversarial fact-checkers per finding |
 | `quality_threshold` | `0.75` | editor confidence needed to stop refining |
 | `enable_debate` | `true` | multi-verifier voting vs. a single fact-check |
@@ -265,11 +285,17 @@ topic ─▶ PLANNER ─▶ RESEARCHERS (parallel, web search) ─▶ VERIFIERS 
    fact-checkers rejected, and ends with an honest "Confidence & Gaps" section.
    Conflicting evidence is surfaced in a **Disagreements** section, and sources
    are listed **ranked by credibility** (primary/authoritative → news → blog).
-6. **Humanizer** — a final pass that rewrites the draft in a natural human voice
+6. **Drill (optional)** — with `--drill N` (or `--depth deep`), after breadth-first
+   coverage the crew goes **deep**: it picks the richest, best-supported finding
+   and researches more specific follow-ups about it — mechanisms, causes,
+   second-order effects, quantitative detail — then the next hop drills into the
+   best remaining thread. Recursive, multi-hop, and bounded so cost stays
+   predictable. Each deeper finding is fact-checked like any other.
+7. **Humanizer** — a final pass that rewrites the draft in a natural human voice
    (varied rhythm, no AI tells), changing *only* voice and flow. It never alters
    a fact and is guarded so it can't drop citations — if a rewrite loses too many
    source URLs, the original draft is kept.
-7. **Memory** — the run is distilled to disk so future related topics build on it.
+8. **Memory** — the run is distilled to disk so future related topics build on it.
 
 Every value that crosses an agent boundary is run through a strict, stdlib-only
 **data-validation layer** (`schemas.py`): malformed or hallucinated model output is
@@ -296,14 +322,14 @@ orchestration logic without any API calls or network access.
 Bigger features that need live external services or are larger projects (open to
 contributions):
 
-- **Local backend** — **Ollama** for fully offline / free runs (OpenAI, Gemini, GLM, Kimi supported).
 - **Local document RAG** — research over your own PDFs/notes.
 - **MCP server mode** — expose vibe-research as a tool to other agents.
-- **Recursive / multi-hop research** — drill deeper into a single finding.
 - **Source archival** — snapshot cited pages against link rot.
 - **Streaming TUI**, **scheduled watch mode**, **Obsidian/Notion sync**.
 
-See `CHANGELOG.md` for what's already shipped.
+Recently shipped (see `CHANGELOG.md`): **local/offline Ollama backend** (plus
+DeepSeek, Groq, Mistral, OpenRouter, Perplexity, xAI engines) and **recursive /
+multi-hop research** (`--drill`).
 
 ---
 
