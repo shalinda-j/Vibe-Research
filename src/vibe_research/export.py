@@ -21,10 +21,16 @@ from datetime import datetime
 from pathlib import Path
 
 # (regular, bold, italic, bold-italic) TrueType families to try, in order.
+# Single-file .ttf families are preferred because fpdf2 loads them cleanly; the
+# macOS `Arial *.ttf` set (in /System/Library/Fonts/Supplemental) gives full
+# Unicode + real bold/italic there. Helvetica.ttc is a last-resort collection —
+# fpdf2 may reject a .ttc, so font registration degrades gracefully if it does.
 _FONT_FAMILIES = (
     ("arial.ttf", "arialbd.ttf", "ariali.ttf", "arialbi.ttf"),
     ("segoeui.ttf", "segoeuib.ttf", "segoeuii.ttf", "segoeuiz.ttf"),
     ("DejaVuSans.ttf", "DejaVuSans-Bold.ttf", "DejaVuSans-Oblique.ttf", "DejaVuSans-BoldOblique.ttf"),
+    # macOS ships these single-file TTFs (note the spaces) in Supplemental.
+    ("Arial.ttf", "Arial Bold.ttf", "Arial Italic.ttf", "Arial Bold Italic.ttf"),
     ("Helvetica.ttc", "Helvetica.ttc", "Helvetica.ttc", "Helvetica.ttc"),
 )
 
@@ -34,7 +40,12 @@ def _font_dirs() -> list[Path]:
         win = Path(__import__("os").environ.get("WINDIR", r"C:\Windows"))
         return [win / "Fonts", Path.home() / "AppData/Local/Microsoft/Windows/Fonts"]
     if sys.platform == "darwin":
-        return [Path("/System/Library/Fonts"), Path("/Library/Fonts"), Path.home() / "Library/Fonts"]
+        return [
+            Path("/System/Library/Fonts"),
+            Path("/System/Library/Fonts/Supplemental"),  # Arial/Times/etc. live here
+            Path("/Library/Fonts"),
+            Path.home() / "Library/Fonts",
+        ]
     return [
         Path("/usr/share/fonts"),
         Path("/usr/local/share/fonts"),
@@ -153,13 +164,21 @@ def markdown_to_pdf(markdown: str, out_path: Path | str, title: str = "", base_d
 
     pdf = _ReportPDF(format="A4")
     pdf._body_family = "helvetica"
+    # Whether a Unicode font actually registered — drives the Latin-1 fallback
+    # below. A discovered font can still fail to load (e.g. fpdf2 rejecting a
+    # macOS .ttc), so we treat that exactly like "no font found" and keep the PDF.
+    unicode_ok = False
     if fonts:
-        reg, bold, ital, bolditalic = fonts
-        pdf.add_font("report", "", str(reg))
-        pdf.add_font("report", "B", str(bold))
-        pdf.add_font("report", "I", str(ital))
-        pdf.add_font("report", "BI", str(bolditalic))
-        pdf._body_family = "report"
+        try:
+            reg, bold, ital, bolditalic = fonts
+            pdf.add_font("report", "", str(reg))
+            pdf.add_font("report", "B", str(bold))
+            pdf.add_font("report", "I", str(ital))
+            pdf.add_font("report", "BI", str(bolditalic))
+            pdf._body_family = "report"
+            unicode_ok = True
+        except Exception:
+            pdf._body_family = "helvetica"  # unloadable font -> core font + Latin-1
 
     pdf.set_auto_page_break(auto=True, margin=18)
     pdf.set_margins(18, 16, 18)
@@ -168,7 +187,7 @@ def markdown_to_pdf(markdown: str, out_path: Path | str, title: str = "", base_d
     # --- title block ---------------------------------------------------------
     if title:
         pdf.set_font(pdf._body_family, "B", 19)
-        pdf.multi_cell(0, 9, title if fonts else _latin1_safe(title))
+        pdf.multi_cell(0, 9, title if unicode_ok else _latin1_safe(title))
         pdf.ln(1)
     pdf.set_font(pdf._body_family, "I", 9)
     pdf.set_text_color(120, 120, 120)
@@ -180,7 +199,7 @@ def markdown_to_pdf(markdown: str, out_path: Path | str, title: str = "", base_d
 
     # --- body ----------------------------------------------------------------
     pdf.set_font(pdf._body_family, "", 11)
-    pdf.write_html(html if fonts else _latin1_safe(html))
+    pdf.write_html(html if unicode_ok else _latin1_safe(html))
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)

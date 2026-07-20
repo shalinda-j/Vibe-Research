@@ -4,6 +4,44 @@ All notable changes to **vibe-research** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project uses
 [semantic versioning](https://semver.org/).
 
+## [0.7.0]
+
+### Added
+- **Local & free engine** — `--mode ollama` runs the whole pipeline on a local
+  [Ollama](https://ollama.com) server: no API key, fully offline, zero cost.
+  Point at a remote host with `OLLAMA_HOST`.
+- **Six more cloud engines** — `--mode deepseek | groq | mistral | openrouter |
+  perplexity | xai`. All speak the OpenAI API (reusing the `[openai]` extra with
+  their own key). **Perplexity's `sonar` models search the live web on every
+  call** and their citations are folded into the report — a strong fit for a
+  research tool. Groq is very fast; OpenRouter reaches hundreds of models with one
+  key; DeepSeek is cheap with strong reasoning.
+- **Recursive / multi-hop "drill" research** — `--drill N` makes the crew go
+  *deep*, not just wide: after breadth-first coverage it picks the richest,
+  best-supported finding and researches more specific follow-ups about it
+  (mechanisms, causes, second-order effects, quantitative detail), then the next
+  hop drills into the best remaining thread. Each deeper finding is fact-checked
+  like any other. `--depth deep` now enables 2 drill hops automatically.
+- **Per-engine endpoint override** — `VIBE_<PROVIDER>_BASE_URL` points any
+  compatible engine at a proxy, gateway, or self-hosted deployment.
+- `doctor` now shows a key-state grid for every engine and the drill setting.
+- **TUI** — a **`Ctrl+X` stop** cancels the current run without quitting; the
+  activity log shows a distinct "drill hop" line and the run header notes drill
+  hops when enabled; the "Drilling deeper" stage has its own progress step.
+
+- **macOS is a first-class platform** — PDF export now discovers macOS's bundled
+  single-file Arial fonts (in `/System/Library/Fonts/Supplemental`) for full
+  Unicode + real bold/italic, and CI runs the suite on a macOS runner too.
+
+### Fixed
+- **TUI findings counter** no longer overflows (e.g. `findings 5/3`) when the
+  self-refining or drill rounds add research threads beyond the initial plan.
+- **TUI** cancelling a run can no longer leave the input box stuck disabled — the
+  UI state resets before the backend is closed.
+- **PDF export is resilient to unloadable fonts** — a discovered font that fpdf2
+  can't load (e.g. a macOS `.ttc` collection) now degrades to the Latin-1 core
+  font instead of aborting the whole export.
+
 ## [0.6.0]
 
 ### Added
@@ -103,6 +141,9 @@ All notable changes to **vibe-research** are documented here. The format follows
 - Initial release: linear plan → research → verify → write pipeline, Textual TUI,
   API and subscription backends.
 
+[0.7.0]: https://github.com/shalinda-j/Vibe-Research/releases
+[0.6.0]: https://github.com/shalinda-j/Vibe-Research/releases
+[0.5.0]: https://github.com/shalinda-j/Vibe-Research/releases
 [0.4.0]: https://github.com/shalinda-j/Vibe-Research/releases
 [0.3.0]: https://github.com/shalinda-j/Vibe-Research/releases
 [0.2.0]: https://github.com/shalinda-j/Vibe-Research/releases

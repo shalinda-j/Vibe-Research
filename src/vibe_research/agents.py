@@ -126,6 +126,32 @@ class PlannerAgent(Agent):
             # Unreadable or failed re-plan -> no new questions; the loop ends cleanly.
             return ResearchPlan(topic=topic, subquestions=[])
 
+    async def drill(self, topic: str, finding: "Finding", n: int) -> ResearchPlan:
+        """Go DEEPER on a single finding: turn it into more specific follow-ups.
+
+        Unlike :meth:`replan` (which widens coverage to close gaps), this narrows
+        — it asks for questions that probe the mechanisms, causes, second-order
+        effects and quantitative detail *inside* one finding. This is what makes
+        the research recursive/multi-hop rather than only breadth-first.
+        """
+        prompt = (
+            f"You are a research lead going DEEPER on one finding within research "
+            f"on: {topic}\n\n"
+            f"FINDING SUB-QUESTION: {finding.question}\n"
+            f"WHAT WE FOUND SO FAR:\n{(finding.answer or '')[:1500]}\n\n"
+            f"Propose up to {n} NEW, more specific follow-up sub-questions that "
+            "drill deeper into THIS finding — its mechanisms, causes, second-order "
+            "effects, quantitative detail, exceptions or edge cases. Go narrower "
+            "and more concrete, not broader. If there is nothing worth deepening, "
+            'return {"subquestions": []}.\n\n'
+            'Return ONLY JSON: {"subquestions": [{"text": "...", "rationale": "..."}]}.'
+        )
+        try:
+            text, _ = await self.backend.complete(prompt, model=self.model)
+            return ResearchPlan.parse(topic, text, hard_cap=n)
+        except Exception:
+            return ResearchPlan(topic=topic, subquestions=[])
+
 
 class ResearcherAgent(Agent):
     """Field researcher: answer one sub-question with live web search.

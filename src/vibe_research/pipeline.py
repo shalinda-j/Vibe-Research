@@ -94,6 +94,7 @@ def run_kwargs_from_config(cfg) -> dict:
         enable_debate=cfg.enable_debate,
         enable_memory=cfg.enable_memory,
         humanize=cfg.humanize,
+        drill_depth=cfg.drill_depth,
         verifier_model=cfg.verifier_model or None,
         writer_model=cfg.writer_model or None,
         humanizer_model=cfg.humanizer_model or None,
@@ -117,6 +118,33 @@ def _overall_confidence(verifications: list[VerificationReport]) -> float:
     if not verifications:
         return 0.5
     return round(sum(v.overall_confidence for v in verifications) / len(verifications), 3)
+
+
+def _most_significant(
+    findings: list[Finding],
+    verifications: list[VerificationReport],
+    skip: set[str] | None = None,
+) -> Finding | None:
+    """Pick the richest, best-supported finding worth drilling deeper into.
+
+    Prefers a well-sourced, high-confidence, substantive thread — the kind where
+    going deeper pays off — and skips any question already used as a drill target
+    so successive hops don't keep re-mining the same one.
+    """
+    skip = skip or set()
+    best: Finding | None = None
+    best_key: tuple | None = None
+    for finding, verification in zip(findings, verifications):
+        if finding.question.strip().lower() in skip:
+            continue
+        key = (
+            round(verification.overall_confidence, 2),
+            len(finding.sources),
+            len(finding.answer or ""),
+        )
+        if best_key is None or key > best_key:
+            best_key, best = key, finding
+    return best
 
 
 def _review_text(findings: list[Finding], verifications: list[VerificationReport]) -> str:
@@ -221,6 +249,7 @@ async def run_pipeline(
     enable_debate: bool = True,
     enable_memory: bool = False,
     humanize: bool = True,
+    drill_depth: int = 0,
     verifier_model: str | None = None,
     writer_model: str | None = None,
     humanizer_model: str | None = None,
@@ -358,6 +387,53 @@ async def run_pipeline(
             {"stage": "research", "msg": f"Researching {len(gap_questions)} gap threads"},
         )
         await research_batch(gap_questions)
+
+    # --- drill: recursive deepening on the strongest finding(s) ---------------
+    # Breadth-first coverage is done; now optionally go DEEP. Each hop takes the
+    # richest finding so far and researches more specific follow-ups about it,
+    # then the next hop drills into the best remaining thread — genuine multi-hop
+    # depth, bounded by ``drill_depth`` so cost stays predictable. New findings
+    # and their fact-checks append in lock-step, so the writer and metadata treat
+    # them like any other finding.
+    if drill_depth and findings:
+        drilled: set[str] = set()
+        for hop in range(1, int(drill_depth) + 1):
+            target = _most_significant(findings, verifications, skip=drilled)
+            if target is None:
+                break
+            drilled.add(target.question.strip().lower())
+            on_event(
+                "stage",
+                {"stage": "drill",
+                 "msg": f"Drilling deeper (hop {hop}/{drill_depth}): {target.question[:60]}"},
+            )
+            deep_plan = await planner.drill(topic, target, 2)
+            answered_norm = {f.question.strip().lower() for f in findings}
+            deep_questions = [
+                q for q in deep_plan.questions if q.strip().lower() not in answered_norm
+            ]
+            if not deep_questions:
+                break
+            on_event(
+                "iteration",
+                {"round": hop, "max": int(drill_depth),
+                 "reason": f"drilling into '{target.question[:50]}'",
+                 "gaps": deep_questions},
+            )
+            before = len(findings)
+            await research_batch(deep_questions)
+            fresh = findings[before:]
+            results = await asyncio.gather(
+                *(verifier.debate(topic, finding, votes) for finding in fresh)
+            )
+            for finding, verification in zip(fresh, results):
+                finding.confidence = verification.overall_confidence
+                verifications.append(verification)
+                on_event(
+                    "debate",
+                    {"question": finding.question,
+                     "confidence": verification.overall_confidence, "votes": votes},
+                )
 
     # --- write ----------------------------------------------------------------
     on_event("stage", {"stage": "write", "msg": "Writing report"})

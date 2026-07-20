@@ -55,6 +55,7 @@ class Config:
     enable_debate: bool = True               # multi-verifier voting vs single check
     enable_memory: bool = True               # learn from / persist past runs
     humanize: bool = True                    # final pass: rewrite in a natural human voice
+    drill_depth: int = 0                     # recursive deepening hops (0 = off)
     memory_dir: str = ""                     # empty -> default_memory_dir()
 
     # --- per-stage model overrides (empty -> use planner_model) --------------
@@ -129,14 +130,17 @@ def save_config(cfg: Config) -> Path:
 
 
 _INT_FIELDS = {"max_parallel", "subquestions", "max_iterations", "verifier_votes", "max_concurrency"}
-_NONNEG_INT_FIELDS = {"max_retries", "call_timeout", "since_year", "words"}   # 0 is meaningful (off)
+_NONNEG_INT_FIELDS = {"max_retries", "call_timeout", "since_year", "words", "drill_depth"}   # 0 is meaningful (off)
 _FLOAT_FIELDS = {"quality_threshold"}
 _BOOL_FIELDS = {
     "enable_debate", "enable_memory", "humanize",
     "export_pdf", "export_html", "export_json", "export_docx", "open_after", "debug",
     "enable_charts", "enable_diagrams", "enable_figures",
 }
-_ALLOWED_MODES = {"auto", "api", "subscription", "openai", "gemini", "glm", "kimi"}
+_ALLOWED_MODES = {
+    "auto", "api", "subscription", "openai", "gemini", "glm", "kimi",
+    "deepseek", "groq", "mistral", "openrouter", "perplexity", "xai", "ollama",
+}
 _ALLOWED_CITATIONS = {"ranked", "plain"}
 _ALLOWED_STYLES = {"report", "essay", "brief"}
 _TRUE = {"1", "true", "yes", "on", "y"}

@@ -37,7 +37,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="Research a topic")
     run.add_argument("topic", nargs="+", help="The topic to research")
-    run.add_argument("--mode", choices=["auto", "api", "subscription", "openai", "gemini", "glm", "kimi"],
+    run.add_argument("--mode", choices=["auto", "api", "subscription", "openai", "gemini", "glm",
+                                        "kimi", "deepseek", "groq", "mistral", "openrouter",
+                                        "perplexity", "xai", "ollama"],
                      help="Override backend engine")
     run.add_argument("--no-tui", action="store_true", help="Run headless (print progress + report path)")
     run.add_argument("--parallel", type=int, help="Concurrent research threads")
@@ -46,6 +48,8 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--worker-model", help="Model for the research/search calls")
     run.add_argument("--output-dir", help="Where to save the report")
     run.add_argument("--iterations", type=int, help="Max self-refining rounds (gap-filling)")
+    run.add_argument("--drill", type=int, metavar="N",
+                     help="Recursive deepening hops: drill deeper into the strongest finding(s)")
     run.add_argument("--votes", type=int, help="Adversarial fact-checkers per finding")
     run.add_argument("--quality", type=float, help="Editor confidence threshold to stop (0-1)")
     run.add_argument("--no-debate", action="store_true", help="Single fact-check instead of a voting debate")
@@ -96,9 +100,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 _DEPTH_PRESETS = {
-    "quick":    {"subquestions": 3, "verifier_votes": 1, "max_iterations": 1},
-    "standard": {"subquestions": 5, "verifier_votes": 2, "max_iterations": 2},
-    "deep":     {"subquestions": 8, "verifier_votes": 3, "max_iterations": 3},
+    "quick":    {"subquestions": 3, "verifier_votes": 1, "max_iterations": 1, "drill_depth": 0},
+    "standard": {"subquestions": 5, "verifier_votes": 2, "max_iterations": 2, "drill_depth": 0},
+    "deep":     {"subquestions": 8, "verifier_votes": 3, "max_iterations": 3, "drill_depth": 2},
 }
 
 
@@ -123,6 +127,8 @@ def _cfg_from_args(cfg: Config, args: argparse.Namespace) -> Config:
         cfg.reports_dir = args.output_dir
     if getattr(args, "iterations", None) is not None:
         cfg.max_iterations = args.iterations
+    if getattr(args, "drill", None) is not None:
+        cfg.drill_depth = max(0, args.drill)
     if getattr(args, "votes", None) is not None:
         cfg.verifier_votes = args.votes
     if getattr(args, "quality", None) is not None:
@@ -191,11 +197,16 @@ def cmd_doctor() -> int:
     print(f"  textual pkg     [{mark(avail['textual'])}] needed for the TUI")
     print(f"  anthropic pkg   [{mark(avail['anthropic'])}] needed for API mode")
     print(f"  claude-agent-sdk[{mark(avail['claude_agent_sdk'])}] needed for subscription mode")
-    print(f"  openai pkg      [{mark(avail['openai'])}] needed for OpenAI/Gemini/GLM/Kimi modes")
+    print(f"  openai pkg      [{mark(avail['openai'])}] needed for OpenAI + compatible engines")
     print(f"  ANTHROPIC_API_KEY[{mark(avail['api_key_set'])}] set in environment")
     print(f"  OPENAI_API_KEY  [{mark(avail['openai_key_set'])}] set in environment")
-    print(f"  GEMINI/GLM/KIMI [{mark(avail['gemini_key_set'])}/{mark(avail['glm_key_set'])}/"
-          f"{mark(avail['kimi_key_set'])}] keys set")
+    keys = avail.get("provider_keys", {})
+    if keys:
+        # Compact grid of every OpenAI-compatible provider's key state.
+        cells = [f"{name} [{mark(ok)}]" for name, ok in keys.items()]
+        for i in range(0, len(cells), 3):
+            print("  compatible keys " + "  ".join(cells[i:i + 3]))
+    print(f"  ollama (local)  [OK ] no key — free/offline (needs a running ollama server)")
     try:
         print(f"  auto mode -> would use: {choose_mode('auto')}")
     except Exception as exc:
@@ -208,6 +219,9 @@ def cmd_doctor() -> int:
     print(f"  crew            planner · researcher · verifier · editor · writer · humanizer")
     print(f"  self-refine     up to {cfg.max_iterations} round(s), stop at "
           f"confidence >= {cfg.quality_threshold:.0%}")
+    print(f"  drill deeper    "
+          + (f"ON — up to {cfg.drill_depth} recursive hop(s) into the strongest finding"
+             if cfg.drill_depth else "off (enable with --drill N or --depth deep)"))
     print(f"  fact-check      {'debate, ' + str(cfg.verifier_votes) + ' votes' if cfg.enable_debate else 'single verifier'} per finding")
     print(f"  humanize        {'ON — natural human-voice rewrite' if cfg.humanize else 'off'}")
     print(f"  memory          {'ON — ' + str(cfg.resolved_memory_dir()) if cfg.enable_memory else 'off'}")
@@ -235,8 +249,9 @@ def cmd_doctor() -> int:
     print("                     pip install claude-agent-sdk ; unset ANTHROPIC_API_KEY")
     print("  OpenAI mode:       pip install openai ; export OPENAI_API_KEY=sk-... ;")
     print("                     run with --mode openai   (pay-per-token; no subscription API)")
-    print("  Gemini/GLM/Kimi:   pip install openai ; export GEMINI_API_KEY / GLM_API_KEY / KIMI_API_KEY ;")
-    print("                     run with --mode gemini|glm|kimi   (OpenAI-compatible; API key)")
+    print("  Compatible APIs:   pip install openai ; export <PROVIDER>_API_KEY ; run --mode <provider>")
+    print("                     gemini · glm · kimi · deepseek · groq · mistral · openrouter · perplexity · xai")
+    print("  Local (free):      install Ollama (ollama.com), `ollama pull llama3.1`, run --mode ollama")
     return 0
 
 
