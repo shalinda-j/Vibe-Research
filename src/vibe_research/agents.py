@@ -38,13 +38,19 @@ from .schemas import (
 
 
 class Agent:
-    """Common base: hold a backend and the model this role runs on."""
+    """Common base: hold a backend and the model this role runs on.
+
+    ``domain_guidance`` is an optional block of field-specific instructions (see
+    :mod:`vibe_research.domains`) that a role appends to its prompt — empty by
+    default, so general research is unchanged.
+    """
 
     role = "agent"
 
-    def __init__(self, backend: Backend, model: str) -> None:
+    def __init__(self, backend: Backend, model: str, domain_guidance: str = "") -> None:
         self.backend = backend
         self.model = model
+        self.domain_guidance = domain_guidance
 
 
 def _memory_context(prior: list[ResearchRecord] | None) -> str:
@@ -79,6 +85,7 @@ class PlannerAgent(Agent):
             "non-overlapping sub-questions that together give thorough coverage.\n\n"
             f"TOPIC: {topic}"
             + _memory_context(prior)
+            + self.domain_guidance
             + "\n\nReturn ONLY a JSON object: "
             '{"subquestions": [{"text": "...", "rationale": "..."}, ...]}. '
             "No prose, no markdown fences."
@@ -116,8 +123,9 @@ class PlannerAgent(Agent):
             f"{gaps_block}\n\n"
             f"Propose up to {n} NEW, specific sub-questions that close those gaps "
             "without overlapping the answered ones. If the gaps are trivial or "
-            'already covered, return {"subquestions": []}.\n\n'
-            'Return ONLY JSON: {"subquestions": [{"text": "...", "rationale": "..."}]}.'
+            'already covered, return {"subquestions": []}.'
+            + self.domain_guidance
+            + '\n\nReturn ONLY JSON: {"subquestions": [{"text": "...", "rationale": "..."}]}.'
         )
         try:
             text, _ = await self.backend.complete(prompt, model=self.model)
@@ -143,8 +151,9 @@ class PlannerAgent(Agent):
             "drill deeper into THIS finding — its mechanisms, causes, second-order "
             "effects, quantitative detail, exceptions or edge cases. Go narrower "
             "and more concrete, not broader. If there is nothing worth deepening, "
-            'return {"subquestions": []}.\n\n'
-            'Return ONLY JSON: {"subquestions": [{"text": "...", "rationale": "..."}]}.'
+            'return {"subquestions": []}.'
+            + self.domain_guidance
+            + '\n\nReturn ONLY JSON: {"subquestions": [{"text": "...", "rationale": "..."}]}.'
         )
         try:
             text, _ = await self.backend.complete(prompt, model=self.model)
@@ -227,8 +236,9 @@ class VerifierAgent(Agent):
             f"You are a skeptical fact-checker reviewing research on: {topic}{lens_line}\n\n"
             "For the finding below, extract its main factual claims and judge each "
             "one strictly against the cited sources. Default to doubt: if a claim "
-            "is not clearly backed by a listed source, it is not 'supported'.\n\n"
-            f"SUB-QUESTION: {finding.question}\n"
+            "is not clearly backed by a listed source, it is not 'supported'."
+            + self.domain_guidance
+            + f"\n\nSUB-QUESTION: {finding.question}\n"
             f"ANSWER:\n{finding.answer}\n"
             f"SOURCES: {', '.join(finding.sources) or 'NONE'}\n\n"
             "Return ONLY JSON:\n"
@@ -261,7 +271,13 @@ class VerifierAgent(Agent):
     ) -> VerificationReport:
         """Run ``votes`` independent verifiers and aggregate their consensus."""
         votes = max(1, votes)
-        lenses = lenses or ["source-fidelity", "logical-consistency", "recency-and-bias"]
+        # Domain-specific lenses (e.g. medical evidence-grading) replace the generic
+        # ones when set, so the debate probes the field's real failure modes.
+        lenses = (
+            lenses
+            or list(getattr(self, "domain_lenses", ()) or ())
+            or ["source-fidelity", "logical-consistency", "recency-and-bias"]
+        )
         picks = [lenses[i % len(lenses)] if votes > 1 else "" for i in range(votes)]
         reports = await asyncio.gather(
             *(self.verify(topic, finding, lens=lens) for lens in picks)
@@ -302,8 +318,9 @@ class EditorAgent(Agent):
             f"You are the managing editor for a research report on: {topic}\n\n"
             "Below is every sub-question with its fact-check score, weak claims and "
             "open gaps. Decide whether coverage is thorough and well-supported "
-            f"enough to publish (target confidence >= {threshold:.2f}).\n\n"
-            f"{dump}\n\n"
+            f"enough to publish (target confidence >= {threshold:.2f})."
+            + self.domain_guidance
+            + f"\n\n{dump}\n\n"
             "Return ONLY JSON:\n"
             "{\n"
             '  "approved": true|false,\n'
@@ -410,6 +427,7 @@ class SynthesizerAgent(Agent):
             f"{overall_confidence:.0%}) that honestly states what is well-established "
             "versus uncertain, and lists remaining gaps.\n"
             "- Do NOT invent facts or sources.\n"
+            + (f"\nDOMAIN GUIDANCE:\n{self.domain_guidance}\n" if self.domain_guidance else "")
             + _style_instructions(prose_style, target_words, enable_charts,
                                   enable_diagrams, enable_figures)
             + f"\nEDITOR ISSUES TO ADDRESS: {editor_notes}\n\n"

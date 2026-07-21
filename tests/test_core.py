@@ -151,6 +151,22 @@ class DropSectionBackend(FakeBackend):
         return await super().complete(prompt, model, use_search)
 
 
+class PromptCaptureBackend(FakeBackend):
+    """Records every prompt it's asked to complete — lets a test assert that
+    domain guidance actually reached the right agents."""
+
+    def __init__(self):
+        super().__init__()
+        self.prompts = []
+
+    async def complete(self, prompt, model, use_search=False):
+        self.prompts.append(prompt)
+        return await super().complete(prompt, model, use_search)
+
+    def saw(self, needle: str) -> bool:
+        return any(needle in p for p in self.prompts)
+
+
 class DrillBackend(FakeBackend):
     """Answers the planner's 'drill deeper' prompt so recursive deepening runs.
 
@@ -471,6 +487,14 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.drill_depth, 3)
         cfgmod.apply_setting(cfg, "drill_depth", "0")           # 0 allowed (off)
         self.assertEqual(cfg.drill_depth, 0)
+
+        # v0.8 domain specialisation
+        cfgmod.apply_setting(cfg, "domain", "medical")
+        self.assertEqual(cfg.domain, "medical")
+        cfgmod.apply_setting(cfg, "domain", "general")
+        self.assertEqual(cfg.domain, "general")
+        with self.assertRaises(ValueError):
+            cfgmod.apply_setting(cfg, "domain", "biology")      # not a known domain
 
         # v0.5 writing/visuals knobs
         cfgmod.apply_setting(cfg, "words", "1500")
@@ -1168,6 +1192,17 @@ class TestEnrich(unittest.TestCase):
         self.assertIn("high", summary)
         self.assertIn("low", summary)
 
+    def test_medical_sources_score_high(self):
+        for url in (
+            "https://clinicaltrials.gov/study/NCT01",
+            "https://www.cochrane.org/reviews/x",
+            "https://www.fda.gov/drugs/y",
+            "https://go.drugbank.com/drugs/DB00331",
+            "https://medlineplus.gov/druginfo/z",
+            "https://jamanetwork.com/journals/jama/a",
+        ):
+            self.assertEqual(enrich.score_source(url)["tier"], "high", msg=url)
+
 
 class TestVisuals(unittest.TestCase):
     def test_count_words_ignores_code(self):
@@ -1250,6 +1285,13 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(self._cfg_from(drill=0).drill_depth, 0)
         # explicit --drill overrides the depth preset
         self.assertEqual(self._cfg_from(depth="deep", drill=5).drill_depth, 5)
+
+    def test_domain_and_medical_flags(self):
+        self.assertEqual(self._cfg_from(medical=True).domain, "medical")
+        self.assertEqual(self._cfg_from(domain="medical").domain, "medical")
+        self.assertEqual(self._cfg_from().domain, "general")           # default
+        # explicit --domain wins over the --medical shorthand
+        self.assertEqual(self._cfg_from(medical=True, domain="general").domain, "general")
 
     def test_pages_maps_to_words(self):
         self.assertEqual(self._cfg_from(pages=3).words, 1500)
@@ -1496,6 +1538,77 @@ class TestTUI(unittest.TestCase):
                 app._refresh_status()
                 return app._busy
         self.assertFalse(asyncio.run(go()))
+
+
+class TestDomains(unittest.TestCase):
+    def test_get_domain_resolution(self):
+        from vibe_research import domains
+
+        self.assertEqual(domains.get_domain("medical").name, "medical")
+        self.assertEqual(domains.get_domain("MEDICAL").name, "medical")   # case-insensitive
+        self.assertEqual(domains.get_domain("general").name, "general")
+        self.assertEqual(domains.get_domain(None).name, "general")
+        self.assertEqual(domains.get_domain("nonsense").name, "general")  # unknown -> general
+        self.assertIn("medical", domains.SPECIALISED)
+
+    def test_medical_profile_is_complete(self):
+        from vibe_research.domains import MEDICAL
+
+        for text in (MEDICAL.planner, MEDICAL.researcher, MEDICAL.verifier,
+                     MEDICAL.writer, MEDICAL.disclaimer):
+            self.assertTrue(text.strip())
+        self.assertTrue(MEDICAL.lenses)          # evidence-grading debate lenses
+        self.assertIn("pubmed", MEDICAL.preferred_domains)
+
+    def test_medical_guidance_reaches_every_agent(self):
+        b = PromptCaptureBackend()
+        asyncio.run(run_pipeline(
+            b, "Metformin for type 2 diabetes",
+            planner_model="p", worker_model="w",
+            subquestions=3, max_parallel=2, domain="medical",
+        ))
+        self.assertTrue(b.saw("MEDICAL / BIOMEDICAL topic"))              # planner
+        self.assertTrue(b.saw("systematic reviews and meta-analyses"))    # researcher
+        self.assertTrue(b.saw("GRADE each key claim"))                    # verifier
+        self.assertTrue(b.saw("rigorous clinical/biomedical evidence review"))  # writer
+
+    def test_medical_disclaimer_sits_at_top_of_report(self):
+        report = asyncio.run(run_pipeline(
+            FakeBackend(), "Statins for primary prevention",
+            planner_model="p", worker_model="w",
+            subquestions=3, max_parallel=2, domain="medical",
+        ))
+        self.assertIn("Medical disclaimer", report)
+        self.assertLess(report.index("Medical disclaimer"), 200)         # near the H1
+
+    def test_general_domain_is_a_noop(self):
+        b = PromptCaptureBackend()
+        events = []
+        report = asyncio.run(run_pipeline(
+            b, "History of jazz", planner_model="p", worker_model="w",
+            subquestions=3, max_parallel=2,          # domain defaults to general
+            on_event=lambda k, d: events.append((k, d)),
+        ))
+        self.assertFalse(b.saw("MEDICAL / BIOMEDICAL topic"))
+        self.assertNotIn("Medical disclaimer", report)
+        self.assertFalse(any(k == "domain" for k, _ in events))
+
+    def test_domain_event_fires_for_medical(self):
+        events = []
+        asyncio.run(run_pipeline(
+            FakeBackend(), "Aspirin", planner_model="p", worker_model="w",
+            subquestions=3, max_parallel=2, domain="medical",
+            on_event=lambda k, d: events.append((k, d)),
+        ))
+        self.assertTrue(any(k == "domain" and d.get("name") == "medical" for k, d in events))
+
+    def test_verifier_uses_domain_lenses(self):
+        b = PromptCaptureBackend()
+        v = VerifierAgent(b, "m", domain_guidance="clinical-context")
+        v.domain_lenses = ("clinical-evidence-grade", "pharmacovigilance-safety")
+        finding = schemas.Finding.build("q", "answer", ["https://pubmed.ncbi.nlm.nih.gov/1"])
+        asyncio.run(v.debate("topic", finding, votes=2))
+        self.assertTrue(b.saw("clinical-evidence-grade"))    # medical lens, not the generic one
 
 
 if __name__ == "__main__":

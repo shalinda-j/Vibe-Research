@@ -28,6 +28,12 @@ _ACADEMIC = (
     "science.org", "sciencedirect.com", "springer", "wiley.com", "cell.com",
     "thelancet.com", "bmj.com", "nejm.org", "jstor.org", "arxiv.org", "ieee.org",
     "acm.org", "oecd.org", "imf.org", "worldbank.org", "un.org", "europa.eu",
+    # Clinical / pharmaceutical / regulatory sources — authoritative for medical
+    # research (drugs, trials, safety) and useful generally.
+    "clinicaltrials.gov", "cochrane", "cochranelibrary.com", "fda.gov",
+    "ema.europa.eu", "drugbank", "medlineplus.gov", "jamanetwork.com",
+    "biorxiv.org", "medrxiv.org", "ahajournals.org", "academic.oup.com",
+    "plos.org", "ecdc.europa.eu", "nice.org.uk",
 )
 _NEWS = (
     "reuters.com", "apnews.com", "bbc.co", "bbc.com", "nytimes.com", "wsj.com",

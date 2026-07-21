@@ -107,6 +107,7 @@ def run_kwargs_from_config(cfg) -> dict:
         enable_charts=cfg.enable_charts,
         enable_diagrams=cfg.enable_diagrams,
         enable_figures=cfg.enable_figures,
+        domain=cfg.domain,
         memory=memory,
     )
 
@@ -222,6 +223,24 @@ def _append_sources(report: str, findings: list[Finding], citations: str = "rank
     return report + "\n\n" + sources_section(all_sources)
 
 
+def _prepend_disclaimer(report: str, disclaimer: str) -> str:
+    """Put a domain safety notice (e.g. the medical disclaimer) at the top of the
+    report, just under its H1. Idempotent, and a no-op when there's no disclaimer.
+
+    Added *after* the humanizer runs so the rewrite can't soften or drop it — the
+    same guarantee the canonical sources list gets."""
+    disclaimer = (disclaimer or "").strip()
+    if not disclaimer or disclaimer in report:
+        return report
+    block = f"> {disclaimer}"
+    lines = report.split("\n", 1)
+    if lines and lines[0].lstrip().startswith("#"):
+        head = lines[0]
+        rest = lines[1].lstrip("\n") if len(lines) > 1 else ""
+        return f"{head}\n\n{block}\n\n{rest}" if rest else f"{head}\n\n{block}"
+    return f"{block}\n\n{report}"
+
+
 def _append_disagreements(report: str, verifications: list[VerificationReport]) -> str:
     contradictions: list[str] = []
     for verification in verifications:
@@ -262,6 +281,7 @@ async def run_pipeline(
     enable_charts: bool = True,
     enable_diagrams: bool = True,
     enable_figures: bool = True,
+    domain: str = "general",
     memory=None,
     on_event: EventCallback = _noop,
 ) -> str:
@@ -273,11 +293,21 @@ async def run_pipeline(
     """
     on_event("start", {"topic": topic})
 
-    planner = PlannerAgent(backend, planner_model)
-    researcher = ResearcherAgent(backend, worker_model, guidance=research_guidance)
-    verifier = VerifierAgent(backend, verifier_model or planner_model)
-    editor = EditorAgent(backend, planner_model)
-    writer = SynthesizerAgent(backend, writer_model or planner_model)
+    # Resolve the research domain (e.g. medical) and fold its field-specific
+    # guidance into each role. GENERAL is a no-op, so default runs are unchanged.
+    from .domains import get_domain
+
+    dom = get_domain(domain)
+    if dom.name != "general":
+        on_event("domain", {"name": dom.name, "label": dom.label})
+    researcher_guidance = " ".join(g for g in (research_guidance, dom.researcher) if g).strip()
+
+    planner = PlannerAgent(backend, planner_model, domain_guidance=dom.planner)
+    researcher = ResearcherAgent(backend, worker_model, guidance=researcher_guidance)
+    verifier = VerifierAgent(backend, verifier_model or planner_model, domain_guidance=dom.verifier)
+    verifier.domain_lenses = dom.lenses
+    editor = EditorAgent(backend, planner_model, domain_guidance=dom.planner)
+    writer = SynthesizerAgent(backend, writer_model or planner_model, domain_guidance=dom.writer)
 
     sem = asyncio.Semaphore(max(1, max_parallel))
     findings: list[Finding] = []
@@ -456,6 +486,8 @@ async def run_pipeline(
     # Surface where sources conflict, then a credibility-ranked reference list.
     report = _append_disagreements(report, verifications)
     report = _append_sources(report, findings, citations)
+    # A domain safety notice (medical disclaimer) goes last so nothing overwrites it.
+    report = _prepend_disclaimer(report, dom.disclaimer)
 
     # --- remember -------------------------------------------------------------
     if enable_memory and memory is not None:
